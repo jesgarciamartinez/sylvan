@@ -88,61 +88,8 @@ class HoleProto<T = any> {
   }
 }
 
-// can also use for slot, ie, if a StaticHole is found as a child of an element: create Slot
 export let $ = (fn: Hole<any>['fn'], deps?: Hole<any>['deps']) => new HoleProto(fn, deps)
 export let $dyn = (fn: Hole<any>['fn']) => new HoleProto(fn, undefined)
-
-/*
-PERF
-can reuse same obj (or fn) as hole instance for all insts if Component has:
-_holes?: Map<Inst | Node, Hole | Set<Hole> | undefined> // no need for _child_insts then
-_holes_values?: Map<Hole, any>
--> but still need owner_inst (and deps) for holes as effects
-
-Holes: array for static - $(() => {}, [])
-Set for dynamic dependencies, where inst is set to a proxy - $dyn(() => {})
-
-Can have: memo that always reruns once, but only once, on update - no deps, no params to memoize, but can be invoked by more than one hole
-
-TODO changes to implement holes: 
-- ✓ create: when is an inst static, process holes 
-- update: 
-  - ✓ process holes first, then partials
-  - node holes: special class / style
-- effects
-
----
-
-create(){
-  return (
-    <Container>
-      <div class={$(_ => )}>
-        <Container>
-          <span></span>
-        </Container>
-      </div>
-    </Container>
-  )
-}
-
-- on mount
-  - Container is static inst, call mount on it
-  - has a slot with a hole $('children'), call update on Slot with {chidren: partial}
-  - inserts <div> partial: create partial_inst for <div>, insert its ._el, mount partial_inst
-  - partial_inst's holes must be called with owner_inst
-
-- there are
-  - regular partials - Slot, When 
-    - when inserted, refs synchronize with owner_inst
-    - holes use `inst` to mean owner inst
-    - don't have update fn
-  - Each partials
-    - refs don't synchronize
-    - holes use `inst` to mean owner inst, `each_inst|item_inst` to mean item_inst
-    - may have inline update fn, where `this` refers to item_inst
-      - maybe disallow inline update fn, might use `inst` or `item_inst` inside
-        - just use a component with holes
-*/
 
 export class Component {
   [key: string]: any
@@ -205,17 +152,6 @@ let inst_to_comp_class = (inst: Inst): CompClass => inst.constructor as CompClas
 let handler_or_partial__owner_comp_class = new WeakMap<Handler | UITree, CompClass>()
 let partial__comp_class = new WeakMap<UITree, CompClass>()
 
-function insert_partial_with_current_inst(
-  partial: UITree | UITree[] | Node | undefined,
-  current_inst_key = '_partial' /* TODO? '_el' */,
-) {
-  assert_exists(_current_inst)
-  let { _anchor, _inspos } = _current_inst
-  assert_exists(_anchor) // _anchor set when processing UITree for components that don't create an _el
-  let prev = _current_inst[current_inst_key] as Inst | Node // will be there if mounted first
-  _current_inst[current_inst_key] = insert_partial(partial, prev, _current_inst, _anchor, _inspos)
-}
-
 // this fn exists because _anchor.insertAdjacentElement(_inspos, next_el) can't be used with `Node`s
 let insert = (anchor: Node, inspos: InsertPosition, node: Node) => {
   // prettier-ignore
@@ -236,50 +172,49 @@ let get_ui_partial_inst = (partial: UITree, current_inst: Inst, partial_update_f
     partial_comp_class = class PartialComp extends Component {
       constructor() { super() } // prettier-ignore
       static _ui_tree = partial
-      update() {
-        // cannot set `update = partial_update_fn`, because it will override the parent's update in When
-        partial_update_fn?.call(this)
-      }
+      // cannot set `update = partial_update_fn`, because it will override the parent's update in When
+      update() { partial_update_fn?.call(this) } // prettier-ignore
       static owner_comp = owner_comp
     }
     partial__comp_class.set(partial, partial_comp_class)
   }
   assert_exists(partial_comp_class)
 
-  // by using _h, partial_inst should have _parent_inst == current_inst
-  let partial_inst = get_inst(_h({ _: partial_comp_class }) as InstEl | Inst)
+  let partial_inst = get_inst(_h({ _: partial_comp_class }) as InstEl | Inst) // by using _h, partial_inst should have _parent_inst == current_inst
 
   let owner_inst = current_inst
   while (inst_to_comp_class(owner_inst) !== owner_comp) owner_inst = owner_inst._parent_inst as Inst // go up the inst tree to get owner_inst, it should always reach parent where partial was defined
   partial_inst._owner_inst = owner_inst
-  // is this necessary? should be able to go to _owner_inst from _parent_inst
-  // partial_inst._child_insts?.forEach((ci) => (ci._owner_inst = owner_inst)) // partial_inst's child_insts should also have the same owner inst - TODO recursively?
+
+  // partial_inst's child_insts should also have the same owner inst, recursively
+  // TODO is this necessary? shouldn't be, since owner_comp is set in h() for partials
+  // partial_inst._child_insts?.forEach((ci) => (ci._owner_inst = owner_inst))
 
   return partial_inst
 }
 
-// TODO don't allow Node here – only UITree – users can just use a component that wraps the Node in create
+let insert_partial_with_current_inst = (
+  partial: UITree | undefined,
+  current_inst_key = '_partial' /* TODO? '_el' */,
+) => {
+  assert_exists(_current_inst)
+  let { _anchor, _inspos } = _current_inst
+  assert_exists(_anchor) // _anchor set when processing UITree for components that don't create an _el
+  let prev = _current_inst[current_inst_key] as Inst // will be there if mounted first
+  _current_inst[current_inst_key] = insert_partial(partial, prev, _current_inst, _anchor, _inspos)
+}
+
 export let insert_partial = (
-  partial: UITree | UITree[] | Node | undefined,
-  prev: Inst | Node,
+  partial: UITree | undefined,
+  prev_inst: Inst,
   current_inst: Inst,
   anchor: Node,
   inspos?: InsertPosition,
-) => {
-  // unmount Node or partial_inst
-  if (prev) {
-    if (is_array(prev)) {
-      TODO()
-    }
-    if (is_node(prev)) {
-    } else {
-      /* is UIPartial */
+): Component | undefined => {
+  // unmount prev partial
+  if (prev_inst) for (let key in prev_inst) if (!key.startsWith('_')) prev_inst._owner_inst![key] = undefined // sync_partial_inst_with_owner_inst
 
-      // sync_partial_inst_with_owner_inst
-      for (let key in prev) if (!key.startsWith('_')) prev._owner_inst![key] = undefined
-    }
-  }
-  let prev_node = prev ? (is_node(prev) ? prev : prev._el) : undefined // TODO array
+  let prev_node = prev_inst._el
   // only do this if no next partial, otherwise the new partial will replace DOM nodes
   // PROBLEM if there is prev_node and partial but partial does not create a next_node - shouldn't happen
   if (prev_node && !partial) {
@@ -289,49 +224,24 @@ export let insert_partial = (
 
   // next
   if (partial) {
-    // if just one element should go to normal flow
-    if (is_array(partial) && partial.length > 1) {
-      TODO()
-      // for (let v of partial) {
-      //   let node = v
-      //   if (is_str(v)) node = process_tag(v)
-      // }
-    } else {
-      let next_node, ret, partial_inst // ret will be prev_node next time
+    assert_is<UITree>(partial)
 
-      // if (is_array(partial)) partial = partial[0] // extract single element
+    let partial_inst = get_ui_partial_inst(partial, current_inst)
+    // sync_partial_inst_with_owner_inst - partials only have _-prefixed keys and don't have props, so any other key can only be a ref
+    for (let key in partial_inst) if (!key.startsWith('_')) partial_inst._owner_inst![key] = partial_inst[key] // partials have _owner_inst
 
-      // old: when UITree could also be string for tag name
-      // let _is_str = is_str(partial)
-      // if (_is_str || is_node(partial)) next_node = ret = _is_str ? h(partial as string) : (partial as Node)
-
-      if (is_node(partial)) next_node = ret = partial as Node
-      else {
-        /* is UIPartial */
-        assert_is<UITree>(partial)
-
-        partial_inst = get_ui_partial_inst(partial, current_inst)
-        // sync_partial_inst_with_owner_inst - partials only have _-prefixed keys and don't have props, so any other key can only be a ref
-        for (let key in partial_inst)
-          if (!key.startsWith('_')) partial_inst._owner_inst![key] = partial_inst[key] // partials have _owner_inst
-
-        ret = partial_inst
-        next_node = partial_inst._el
-        if (!next_node) {
-          partial_inst._anchor = anchor
-          partial_inst._inspos = inspos
-        }
-      }
+    let next_node = partial_inst._el
+    if (next_node) {
       // mount
-      if (next_node) {
-        if (prev_node) prev_node.parentNode!.replaceChild(next_node, prev_node)
-        else if (inspos) insert(anchor, inspos, next_node)
-        else anchor.parentNode!.replaceChild(next_node, anchor) // if _anchor is comment node, replace _anchor with next_el
-
-        if (partial_inst) mount(partial_inst) // should mount after inserting in DOM
-      }
-      return ret
+      if (prev_node) prev_node.parentNode!.replaceChild(next_node, prev_node)
+      else if (inspos) insert(anchor, inspos, next_node)
+      else anchor.parentNode!.replaceChild(next_node, anchor) // if _anchor is comment node, replace _anchor with next_el
+      mount(partial_inst) // should mount after inserting in DOM
+    } else {
+      partial_inst._anchor = anchor
+      partial_inst._inspos = inspos
     }
+    return partial_inst
   }
 }
 
@@ -362,7 +272,7 @@ function assert_changed(inst: Inst, prop: string) {
 }
 
 class Slot extends Component {
-  declare value: UITree | Node
+  declare value: UITree
   update() {
     assert_changed(this, 'value')
     insert_partial_with_current_inst(this.value)
@@ -373,7 +283,8 @@ export function $slot(ref: string): UITree {
   assert_exists(_current_inst)
   return { _: Slot, ref }
 }
-export function slot(ref: string, value: UITree | Node) {
+
+export function slot(ref: string, value: UITree) {
   assert_exists(_current_inst)
   let slot_inst = _current_inst[ref] as Inst
   if (slot_inst) update<Slot>(slot_inst, { value })
@@ -392,9 +303,6 @@ class When extends Component {
 
   update() {
     assert_exists(_current_inst)
-
-    // only `when` may change, everything else fixed, so don't need the check: if it's called, it's because `when` *has* changed
-    // NO: wanna make it easier to skip checks in calling components
     if (c('when')) insert_partial_with_current_inst(this.when ? this.then : this.else)
   }
 }
@@ -431,63 +339,6 @@ export function when(when: boolean, ref: string): boolean {
 
 /*--------------------------------------------------------------------------------------------------------------------------------------------*/
 //#region Each
-
-export class List<T extends WeakKey> {
-  item_to_dom: (t: T) => HTMLElement
-  mount?: (el: HTMLElement, t: T) => void
-  anchor: HTMLElement
-  inspos?: InsertPosition
-  current_dom_array: HTMLElement[] = []
-  cache: WeakMap<T, HTMLElement>
-  _reject_item?: (t: T) => boolean
-  reject_item(t: T): boolean {
-    let { _reject_item } = this
-    if (_reject_item) return _reject_item(t)
-    return false
-  }
-
-  constructor(
-    item_to_dom: List<T>['item_to_dom'],
-    anchor: List<T>['anchor'],
-    mount?: List<T>['mount'],
-    inspos?: List<T>['inspos'],
-    cache: List<T>['cache'] = new WeakMap(),
-    reject_item?: List<T>['reject_item'],
-  ) {
-    this.item_to_dom = item_to_dom
-    this.anchor = anchor
-    this.mount = mount
-    this.inspos = inspos
-    this.cache = cache
-    this._reject_item = reject_item
-  }
-
-  reconcile(new_array: T[]) {
-    let parent_node = this.anchor // TODO non-parent anchors with other inspos
-
-    let next_dom_array: HTMLElement[] = [],
-      new_els: HTMLElement[],
-      new_items: T[]
-
-    for (let i = 0, len = new_array.length; i < len; i++) {
-      let item = new_array[i]
-      if (this.reject_item(item)) continue
-      let cached_dom = this.cache.get(item)
-      if (!cached_dom) {
-        cached_dom = this.item_to_dom(item)
-        this.cache.set(item, cached_dom)
-        ;(new_els ??= []).push(cached_dom)
-        ;(new_items ??= []).push(item)
-      }
-      next_dom_array.push(cached_dom)
-    }
-
-    reconcile(parent_node, this.current_dom_array, next_dom_array)
-    this.current_dom_array = next_dom_array
-    if (this.mount && new_items!)
-      for (let i = 0, len = new_items.length; i < len; i++) this.mount(new_els![i], new_items[i])
-  }
-}
 
 class Each extends Component {
   // props
@@ -536,7 +387,6 @@ class Each extends Component {
       we can't access item_instances from outside, so have to rely on global reactivity `set` to update them
       to do so we add the Each inst to effects, its `update` will execute any time anything changes, and inside it will check if it's one of its objs */
 
-    // TODO if `changes` has many objs this can be a perf problem, but it shouldn't normally happen
     for (let [obj, keys] of changes) {
       let item_inst = this.cache?.get(obj)
       if (item_inst) {
@@ -678,8 +528,7 @@ function reconcileArrays(parentNode: Element, a: Element[], b: Element[]) {
  * fns passed as prop to a component instance are associated to the component they come from
  */
 let handler_to_owner_inst = (handler: Handler, target: Element): Inst | undefined => {
-  // if `listen` was called while processing template, it will have inst
-  // otherwise inst will be undefined (handler doesn't need an inst)
+  // if `listen` was called while processing template, it will have inst, otherwise inst will be undefined (handler doesn't need an inst)
   let owner_inst = el_to_inst_el_is_part_of(target) as Inst | undefined
   let owner_comp = handler_or_partial__owner_comp_class.get(handler) // no component means owner_inst == el_inst ie _current_inst when `listen` was called
   if (owner_inst && owner_comp)
@@ -692,9 +541,8 @@ let event_prefix = '__'
 /* modified from https://github.com/Freak613/stage0/blob/master/syntheticEvents.js */
 let global_event_listener = (e: Event) => {
   let { type } = e,
-    target = e.target as Element | null // synthetic events only used for regular Els - not window, document, or others
+    target = e.target as Element | null // synthetic events only used for regular Elements - not window, document, or others
   while (target) {
-    // handler = el__handlers.get(target)?.get(type)
     // @ts-expect-error
     let handler = target[event_prefix + type]
     if (handler) {
@@ -709,7 +557,7 @@ let global_event_listener = (e: Event) => {
 export function listen(el: Element, event_name: string, handler: Handler<any, any>) {
   if (__DEV__) { let str = handler.toString(); if (str.startsWith('(') /* is arrow fn */ && str.includes('this')) console.warn("If your handler acceses `this` in a component, you should write it as a `function` instead of an arrow function (`() => {}`), because `this` in arrow functions cannot be rebound.") } // prettier-ignore
 
-  document.addEventListener(event_name, global_event_listener) // adding same listener twice has no effect
+  document.addEventListener(event_name, global_event_listener) // adding the same listener twice has no effect
 
   // @ts-expect-error
   el[event_prefix + event_name] = handler
@@ -741,7 +589,6 @@ let svg_tags = new Set(['svg', 'path']),
   is_svg = (s: string) => svg_tags.has(s)
 let process_tag = (tag: string): El => {
   let el
-  // since string literal text is rare (because in translated apps, those won't be strings), can use .string for div with just class, but just for one class/id, else gets too complicated, must .split(), etc
   let starts_with_dot = tag.startsWith('.')
   if (starts_with_dot || tag.startsWith('#')) {
     el = document.createElement('div')
@@ -760,8 +607,6 @@ let process_tag_prop = (el: Element, prop_key: string, value: any) => {
       _current_inst[value as string] = el //refs are strings
       break
     case 'class':
-      // [Revisit setAttribute vs setting properties · Issue #3750 · sveltejs/svelte](https://github.com/sveltejs/svelte/issues/3750)
-      // Solid also sets className - https://github.com/ryansolid/dom-expressions/blob/eb9a6bcf640b04c1d1c889d9983914a2776093fe/packages/dom-expressions/src/client.js#L120
       if (is_str(value)) {
         if (el instanceof SVGElement) el.setAttribute('class', value)
         else el.className = value
@@ -772,7 +617,6 @@ let process_tag_prop = (el: Element, prop_key: string, value: any) => {
       el.style.cssText = value
       break
     case 'children':
-      // BUG is_array_meant_as_single_child_vdom
       if (is_array(value)) {
         let last_appended_child: Node | undefined // Element | Text | undefined
         let pending_slot: Inst | undefined
@@ -781,7 +625,7 @@ let process_tag_prop = (el: Element, prop_key: string, value: any) => {
           if (!is_node(child_node_or_inst)) {
             assert_exists(_current_inst)
             let inst = child_node_or_inst as Inst
-            //resolve pending slot from last iteration: this iteration is_hole, so must create comment node
+            // resolve pending slot from last iteration: this iteration is_hole, so must create comment node
             if (pending_slot) {
               let comment_node = document.createComment('')
               el.appendChild(comment_node)
@@ -815,7 +659,7 @@ let process_tag_prop = (el: Element, prop_key: string, value: any) => {
             let node = child_node_or_inst
 
             if (pending_slot) {
-              //resolve pending slot from last iteration: this iteration has child_el, so can anchor to it
+              // resolve pending slot from last iteration: this iteration has child_el, so can anchor to it
               assert_exists(_current_inst)
               pending_slot._inspos = 'beforebegin'
               pending_slot._anchor = node // text node is safe to use even with translations, which currently only change its textContent (not changing the Text for another one) - BUG: clone text node
@@ -834,30 +678,23 @@ let process_tag_prop = (el: Element, prop_key: string, value: any) => {
       }
       break
     default:
-      if (is_fn(value)) listen(el, prop_key, value as Handler) // fn must be Handler
+      if (is_fn(value)) listen(el, prop_key, value as Handler) // fn must be a Handler
       else if (value == null) el.removeAttribute(prop_key)
       else el.setAttribute(prop_key, value)
-
-    // any other value will be converted to string
-    // setAttribute vs properties https://github.com/sveltejs/svelte/issues/3750
-    // does setAttribute work for class, className? -> if (p == 'class') el.className = value
-    // el[prop_key] = prop_value //error in Icon tpl: Cannot set property width of SVGElement which has only a getter
   }
 }
 let process_tag_child = (el: Element, v: Node | Text | UITree): Node | Inst => {
   let child_node_or_inst
+  // TODO disallow `Node`s in templates?
   if (is_node(v)) {
-    // Singletons: Can make sense to not clone, if user wants to use a specific node in a singleton component
-    let is_singleton = _current_inst && inst_to_comp_class(_current_inst).singleton
+    let is_singleton = _current_inst && inst_to_comp_class(_current_inst).singleton // Singletons: Can make sense to not clone, if user wants to use a specific node in a singleton component
     child_node_or_inst = is_singleton ? v : v.cloneNode(true)
-  } // else if (is_array(v) && is_fn(v[0])) child_node_or_inst = v[0](v.slice(1)) // TODO keep this?
-  else child_node_or_inst = _h(v)
-
+  } else child_node_or_inst = _h(v)
   if (is_node(child_node_or_inst)) el.appendChild(child_node_or_inst) // PERF .append() faster?
   return child_node_or_inst
 }
 
-let insts_pool = new Map<CompClass, Array<Inst>>() // TODO - or delete this and have userland do it by returning a pool_inst from the component constructor
+let insts_pool = new Map<CompClass, Array<Inst>>() // TODO - or delete this and have do it in userland by having the component constructor return an inst from the pool
 
 let process_hole = (inst_or_node: Inst | Node, prop: string, static_hole: HoleProto) => {
   assert_exists(_current_inst)
@@ -890,23 +727,14 @@ let _h = (arg: UITree): El | Inst => {
     assert_exists(tag_inst)
 
     //#region process_inst_props
-    /* do this here so they're available for create() - TODO should do this?
-      - pros: can use static pros in create
-      - cons: can not call create in the background without those static props, it divides prop types into 'required static' and the rest
-        - but background stuff should be opt-in per component anyway
-    */
-    let is_static_inst = true // no ref, or no props at all; ref means it should be further `update`d in parent `update`
+
+    let is_static_inst = true // no ref or holes; ref means it should be further `update`d in parent `update()`
     let props = arg
     for (let prop_key in props)
       if (!prop_key.startsWith('_')) {
         let prop_value = props[prop_key]
 
-        // if processing template (== _current_inst exists)
-        // PROBLEM: is _current_inst a good way of telling if we're processing_template? or can it exist even though we're not processing? maybe in handlers
-        // IF this happens, can have another variable for this
-        // let are_we_processing_template = exists(_current_inst)
-        // if (are_we_processing_template) {
-        // } else {}
+        // we are processing a template
         if (_current_inst) {
           if (prop_value instanceof HoleProto) {
             is_static_inst = false
@@ -931,14 +759,6 @@ let _h = (arg: UITree): El | Inst => {
         tag_inst[prop_key] = prop_value
       }
 
-    /*
-            since mount is effectively update, there is no difference between doing it eagerly (as soon
-            as a static child inst is created) or lazily (waiting till mount) - since it can trigger effects and read from the DOM,
-            seems better to wait till mount
-            BUT - when creating child insts with h() in `update`, must now mount them (see BreadCrumbs), since they don't get updated otherwise
-            
-            // update_inst(tag_inst)
-        */
     if (is_static_inst) tag_inst._is_static = true
     //#endregion
 
@@ -946,19 +766,15 @@ let _h = (arg: UITree): El | Inst => {
     if (did_not_have_tag_inst) {
       if (!comp._ui_tree) {
         let el_or_ui_tree = tag_inst.create?.()
-        // if create returns DOM
         if (is_node(el_or_ui_tree)) {
+          // if create returns DOM
           ;(el_or_ui_tree as InstEl)[$inst] = tag_inst
           tag_inst._el = el_or_ui_tree
         } else if (exists(el_or_ui_tree)) comp._ui_tree = el_or_ui_tree // if create returns UITree
       }
-      // NO ELSE, this is intentional - will have ui_tree only if create does not return DOM node
+      // no `else`, this is intentional - will have ui_tree only if create does not return DOM node
       if (comp._ui_tree) {
         let el_or_child_inst = with_current_inst(tag_inst, _h, comp._ui_tree) as InstEl | Inst
-
-        // _h returns a node (<div>) or an inst <Container>
-        // -> TODO right now, h returns the _el inside the inst if present, maybe just always return the inst
-        // and then .el can be a getter that recurses through top-level insts until one has an ._el
 
         if (is_node(el_or_child_inst)) {
           let child_inst = el_to_inst_el_is_part_of(el_or_child_inst)
@@ -980,7 +796,7 @@ let _h = (arg: UITree): El | Inst => {
     //#endregion
 
     el = tag_inst._el
-    if (!el) return tag_inst // e.g. `If`, `For`
+    if (!el) return tag_inst
   }
 
   return el as El // here there will always be an El
@@ -997,7 +813,6 @@ export let h = _h as (arg: UITree) => El
 //// update helpers
 
 // TODO cls helper can take an existing ref and store prev classes in <ref>_prev_classes to diff
-
 // let cls = (_ref: string, _obj_or_str: any) => {}
 
 /** allows setting a default value for a prop in `update` - TODO not needed since we have _first_update */
@@ -1012,7 +827,6 @@ export let default_value = (key: string, val: any) => {
 }
 
 // arr or obj considered changed even if it's the same reference - in update, if an arr/obj is passed as prop to update fn, it will always be considered changed
-// maybe for props don't need to check if changed - ie all like obj/arr
 let default_equals = (val: any, prev: any) => (is_arr_or_obj(val) ? false : val === prev)
 
 let _memo = (inst: Inst, key: string, val: any, has_changed?: boolean): boolean => {
@@ -1113,7 +927,6 @@ export let mount = (inst: Inst, where?: HTMLElement) => {
   trigger_update(inst)
 }
 
-// TODO
 export let unmount = (inst: Inst) => {
   inst.cleanup?.()
   effects.delete(inst)
@@ -1130,11 +943,10 @@ export let unmount = (inst: Inst) => {
 // rationale for this is a given change in a UI usually happens when the data it affects is shown
 
 type Effect = Inst | { cleanup?(): void; update(): void | (() => void) /* can return cleanup fn */ }
-// let effects_stack = []
 let _current_effect: Effect | undefined
 let get_current_effect = (): Effect => _current_effect ?? _current_inst!
 
-// iterable weakset for effects? otherwise must manually remove
+// TODO iterable weakset for effects? otherwise must manually remove
 let prev_effects = new Set<Effect>()
 let effects = new Set<Effect>()
 
@@ -1188,13 +1000,6 @@ export let swap = (old_obj: any, new_obj: any) => {
 }
 
 // analogous to update / trigger_update, but for effects
-
-// to trigger effects:
-// array: set(array)
-// set: set(my_set)
-// map: set(my_map, {k: v})
-// obj: set(my_obj, {k: v})
-
 export let set = (
   o: AnyObject | Map<any, any> | Set<any> | Array<any>,
   props: any,
@@ -1238,26 +1043,6 @@ export let trigger_effects = () => {
   current_effects.clear()
   prev_effects = current_effects
 }
-
-// OLD set: just objects, and OLD batch fn
-
-// export let set = (o, k, v) => {
-//   o[k] = v
-
-//   let keys = changed_obj__keys.get(o)
-//   if (!keys) { keys = new Set(); changed_obj__keys.set(o, keys) } // prettier-ignore
-//   keys.add(k)
-
-//   if (!is_batched) run_effects()
-// }
-
-// let is_batched = false
-// export let batch = (fn: () => void) => {
-//   is_batched = true
-//   fn()
-//   is_batched = false
-//   run_effects()
-// }
 
 //#endregion
 /*--------------------------------------------------------------------------------------------------------------------------------------------*/
