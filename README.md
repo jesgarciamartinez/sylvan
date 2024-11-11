@@ -13,17 +13,17 @@ An experiment to find a "minimum viable framework"
 
 ## How it works
 
-- Components are implemented as classes with create / mount / update / cleanup methods
-- The `create` method returns either a DOM node or a _UITree_ 
+- Components are implemented as classes with `create` / `mount` / `update` / `cleanup` methods
+- The `create` method returns either a DOM Node or a _UITree_
+  - returning a DOM Node allows for maximum flexibility – it can also find and return a Node already present in the DOM
   - a UITree is a tree of objects and arrays, similar to a VDOM, but with dynamic parts (conditionals and loops) encoded as part of the tree, with special components like `When` and `Each`, so *there is no diffing*.
   - each component's template is created once – overall in the app, not once per component instance. 
     Templates can have dynamic data in the form of `Hole`s (WIP – see below), just string refs to be used in `update()`.
-
 - In the `update` method you write guards yourself – `if (changed(this, prop1, prop2)){}`) – this is similar to what Svelte compiles to (pre-v5, at least), or to the React Forget compiler.
+- `mount` is just called once, when the component is appended to the DOM
+- `cleanup` is called before every `update`
 
 - There is a are-bones global state solution (see below)
-  - whole components instances subscribe to it
-  - any regular obj/array/Map/Set can be mutated with a special `set` function, and all subscribed component's `update()` will run
 
 ## Why it works this way
 
@@ -138,6 +138,8 @@ However, they allow for much better DX.
 Holes are currently being implemented.
 
 ### Global reactivity
+
+- based on using a special `set` function that any regular obj / array / Map / Set can be mutated with, which causes all subscribed component's `update()` to run
 
 ## FAQ
 
