@@ -2,8 +2,9 @@
 
 ## Why
 
-Simplicity, performance, and low level control.
-An experiment to find a "minimum viable framework".
+Simplicity, performance, and low level control. An experiment to find a "minimum viable framework".
+
+Sylvan aims to have great performance, executing only necessary code on rerenders, while letting you work with plain data (objects and arrays) and allowing you to easily drop down to manual DOM manipulation, while being as light an abstraction layer as possible.
 
 ## What it's for
 
