@@ -3,12 +3,12 @@
 ## Why
 
 Simplicity, performance, and low level control.
-An experiment to find a "minimum viable framework"
+An experiment to find a "minimum viable framework".
 
 ## What it's for
 
 - SPAs that require performance and control over the DOM.
-- while not intended for the "JS sprinkles" approach – where JS only adds light interactivity for HTML returned from a server – it's possible to use Sylvan in this way, in a hopefully more pricipled, non ad-hoc way than using vanilla JS.
+- while not intended for the "JS sprinkles" approach – where JS only adds light interactivity for HTML returned from a server – it's possible to use Sylvan in this way, in a hopefully more principled, non ad-hoc way than using vanilla JS.
   
 
 ## How it works
