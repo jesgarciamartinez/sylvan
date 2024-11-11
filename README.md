@@ -102,8 +102,8 @@ class ConditionalsAndLoopsExample extends Component {
           $each(
             () => inst.list,
             <div>
-              <span>{$(() => inst.name)}</span>
-              <span>{$(() => inst.age)}</span>
+              <span>{$(() => itemInst.name)}</span>
+              <span>{$(() => itemInst.age)}</span>
             </div>,
           ),
         )}
