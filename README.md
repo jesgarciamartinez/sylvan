@@ -35,16 +35,15 @@ Roughly speaking, if a component has a bunch of code and you only want to execut
 - 3. put code in a single function, with different sections behind `if-guards`. This is what Svelte does (at least pre-v5, that has signals), and the React compiler also optimizes code this way. The `if` condition of the guards encodes the same information about dependencies as the tracked data would.
 
 The single-function-with-guards approach has pros and cons
-    - pro: 
-        - it's simpler
-        - consumes less memory
-        - explicit order of execution
-    - con: 
-        - limits the expressivity of your templates. This is the biggest problem because it's a big DX hit.
-        If you don't want to re-run your whole template (like React does with the VDOM), and unless you use a compiler (like Svelte), you are stuck with purely static templates with no dynamic parts, since they would need to be put into their own functions; so you must use refs to keep track of DOM nodes and component instances that change.
-          - this is a big enough DX problem that Sylvan *also* has `Hole`s – so it's a mix between the 1st and 3rd approaches above.
-        - it's annoying to type out, like React dependency arrays
-        - explicit order of execution
+- pro: 
+  - it's simpler
+  - consumes less memory
+  - explicit order of execution
+- con: 
+  - limits the expressivity of your templates. This is the biggest problem because it's a big DX hit. If you don't want to re-run your whole template (like React does with the VDOM), and unless you use a compiler (like Svelte), you are stuck with purely static templates with no dynamic parts, since they would need to be put into their own functions; so you must use refs to keep track of DOM nodes and component instances that change.
+  - this is a big enough DX problem that Sylvan *also* has `Hole`s – so it's a mix between the 1st and 3rd approaches above.
+  - it's annoying to type out, like React dependency arrays
+  - explicit order of execution
         
 _order of execution_ is listed both as a pro and a con.
 Modern frameworks have tiered rerender execution, roughly: first pure computations, then DOM changes, then effects.
