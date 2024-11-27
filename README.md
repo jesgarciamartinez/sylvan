@@ -22,9 +22,9 @@ Sylvan aims to have great performance, executing only necessary code on rerender
     Templates can have dynamic data in the form of `Hole`s (WIP – see below), and string refs that become instance variables to be accessed in `update()`.
 - In the `update` method you write guards yourself – `if (changed(this, prop1, prop2)){}`) – this is similar to what Svelte compiles to (pre-v5, at least), or to the React Forget compiler.
 - `mount` is just called once, when the component is appended to the DOM
-- `cleanup` is called before every `update`
+- `cleanup` is called before every `update` and before unmounting
 
-- There is a are-bones global state solution (see below)
+- There is a bare-bones global state solution (see below)
 
 ## Why it works this way
 
