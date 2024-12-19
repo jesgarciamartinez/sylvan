@@ -99,10 +99,10 @@ export class Component {
   mount?(): void
   update?(): void
   cleanup?(): void
+  unmount?(): void
   static _ui_tree?: UITree
-  static singleton?: boolean
+  static cache_ui_tree = true
   static equals?: { [key: string]: (val: any, prev: any) => boolean }
-  static owner_comp?: CompClass // needed for _h: _h associates it to partials, then when partial instantiated, it determines owner inst
 
   _changed: Map<string, any /* <- previous value */> = new Map()
 
@@ -115,8 +115,6 @@ export class Component {
 
   _holes?: Hole<any>[] // when iterating, will need Map<Inst, props> - can update then, or just set values and update after running `update()` - probably not
   _partial_insts?: Set<Inst>
-
-  _owner_inst?: Inst // only partials have owner inst
 
   _mounted: boolean = false
   _is_static?: boolean
@@ -151,7 +149,36 @@ let inst_to_comp_class = (inst: Inst): CompClass => inst.constructor as CompClas
 //#region PARTIALS
 
 let handler_or_partial__owner_comp_class = new WeakMap<Handler | UITree, CompClass>()
-let partial__comp_class = new WeakMap<UITree, CompClass>()
+let is_ui_tree = (x: any): x is UITree => is_obj(x) && (is_str(x._) || x._ instanceof Component || is_fn(x._))
+
+class PartialComp extends Component {
+  // must be prefixed with _, because non-prefixed properties are refs that can be synced
+  // TODO BUG will sync methods too
+  declare _partial: UITree
+  declare _owner_inst: Inst
+  declare _sync_refs: boolean
+  create() { return this.partial } // prettier-ignore
+  static cache_ui_tree = false // avoids having to do this right after instantiating: `delete PartialComp._ui_tree` // otherwise when creating another partial _h will not call create, and take the cached _ui_tree
+  mount() {
+    ;(this._owner_inst._partial_insts ?? new Set()).add(this)
+    if (this._sync_refs) for (let key in this) if (!key.startsWith('_')) this._owner_inst[key] = this[key]
+  }
+  unmount() {
+    this._owner_inst._partial_insts!.delete(this)
+    if (this._sync_refs) for (let key in this) if (!key.startsWith('_')) this._owner_inst[key] = undefined
+  }
+}
+
+let instantiate_partial = (partial: UITree, current_inst: Inst, sync_refs: boolean = false) => {
+  let owner_comp = handler_or_partial__owner_comp_class.get(partial)
+  let owner_inst = current_inst
+  while (inst_to_comp_class(owner_inst) !== owner_comp) owner_inst = owner_inst._parent_inst as Inst // go up the inst tree to get owner_inst, it should always reach parent where partial was defined
+
+  let partial_inst = _h({ _: PartialComp, _partial: partial, _sync_refs: sync_refs }) as PartialComp // by using _h, partial_inst should have _parent_inst == current_inst
+  partial_inst._owner_inst = owner_inst
+
+  return partial_inst
+}
 
 // this fn exists because _anchor.insertAdjacentElement(_inspos, next_el) can't be used with `Node`s
 let insert = (anchor: Node, inspos: InsertPosition, node: Node) => {
@@ -166,36 +193,6 @@ let insert = (anchor: Node, inspos: InsertPosition, node: Node) => {
     }
 }
 
-let get_ui_partial_inst = (partial: UITree, current_inst: Inst, partial_update_fn?: () => void) => {
-  let owner_comp = handler_or_partial__owner_comp_class.get(partial)
-  let partial_comp_class = partial__comp_class.get(partial)
-  if (!partial_comp_class) {
-    partial_comp_class = class PartialComp extends Component {
-      constructor() { super() } // prettier-ignore
-      static _ui_tree = partial
-      // cannot set `update = partial_update_fn`, because it will override the parent's update in When
-      // update right now calls update_holes(), won't call partial_update_fn even if partial has one - delete this?
-      update() { partial_update_fn?.call(this) } // prettier-ignore
-      static owner_comp = owner_comp
-    }
-    partial__comp_class.set(partial, partial_comp_class)
-  }
-  assert_exists(partial_comp_class)
-
-  let partial_inst = get_inst(_h({ _: partial_comp_class }) as InstEl | Inst) // by using _h, partial_inst should have _parent_inst == current_inst
-
-  let owner_inst = current_inst
-  while (inst_to_comp_class(owner_inst) !== owner_comp) owner_inst = owner_inst._parent_inst as Inst // go up the inst tree to get owner_inst, it should always reach parent where partial was defined
-  partial_inst._owner_inst = owner_inst
-  ;(owner_inst._partial_insts ?? new Set()).add(partial_inst) // <- TODO could be done on mount
-
-  // partial_inst's child_insts should also have the same owner inst, recursively
-  // TODO is this necessary? shouldn't be, since owner_comp is set in h() for partials
-  // partial_inst._child_insts?.forEach((ci) => (ci._owner_inst = owner_inst))
-
-  return partial_inst
-}
-
 let insert_partial_with_current_inst = (
   partial: UITree | undefined,
   current_inst_key = '_partial' /* TODO? '_el' */,
@@ -203,36 +200,37 @@ let insert_partial_with_current_inst = (
   assert_exists(_current_inst)
   let { _anchor, _inspos } = _current_inst
   assert_exists(_anchor) // _anchor set when processing UITree for components that don't create an _el
-  let prev = _current_inst[current_inst_key] as Inst // will be there if mounted first
+  let prev = _current_inst[current_inst_key] as PartialComp | undefined // will be there if mounted first
   _current_inst[current_inst_key] = insert_partial(partial, prev, _current_inst, _anchor, _inspos)
 }
 
 export let insert_partial = (
   partial: UITree | undefined,
-  prev_inst: Inst,
+  prev_partial_inst: PartialComp | undefined,
   current_inst: Inst,
   anchor: Node,
   inspos?: InsertPosition,
 ): Component | undefined => {
-  // unmount prev partial
-  if (prev_inst) for (let key in prev_inst) if (!key.startsWith('_')) prev_inst._owner_inst![key] = undefined // sync_partial_inst_with_owner_inst
-  prev_inst._owner_inst!._partial_insts!.delete(prev_inst)
+  let prev_node
 
-  let prev_node = prev_inst._el
-  // only do this if no next partial, otherwise the new partial will replace DOM nodes
-  // PROBLEM if there is prev_node and partial but partial does not create a next_node - shouldn't happen
-  if (prev_node && !partial) {
-    if (inspos) prev_node.parentNode!.removeChild(prev_node)
-    else prev_node.parentNode!.replaceChild(anchor, prev_node) // if _anchor is comment node, replace _el with _anchor
+  // unmount prev partial
+  if (prev_partial_inst) {
+    unmount(prev_partial_inst)
+
+    prev_node = prev_partial_inst._el
+    // only do this if no next partial, otherwise the new partial will replace DOM nodes
+    // PROBLEM if there is prev_node and partial but partial does not create a next_node - shouldn't happen
+    if (prev_node && !partial) {
+      if (inspos) prev_node.parentNode!.removeChild(prev_node)
+      else prev_node.parentNode!.replaceChild(anchor, prev_node) // if _anchor is comment node, replace _el with _anchor
+    }
   }
 
-  // next
+  // mount next partial
   if (partial) {
     assert_is<UITree>(partial)
 
-    let partial_inst = get_ui_partial_inst(partial, current_inst)
-    // sync_partial_inst_with_owner_inst - partials only have _-prefixed keys and don't have props, so any other key can only be a ref
-    for (let key in partial_inst) if (!key.startsWith('_')) partial_inst._owner_inst![key] = partial_inst[key] // partials have _owner_inst
+    let partial_inst = instantiate_partial(partial, current_inst, true)
 
     let next_node = partial_inst._el
     if (next_node) {
@@ -375,7 +373,7 @@ class Each extends Component {
         if (cached_inst) this.curr_cache.delete(key)
         else {
           assert_exists(_current_inst) // TODO is it `this`?
-          cached_inst = get_ui_partial_inst(this.item_template, _current_inst, this.item_update)
+          cached_inst = instantiate_partial(this.item_template, _current_inst, this.item_update)
           ;(new_insts ??= new Map()).set(item, cached_inst) // for mount - could just `update(item_inst, item)` here only if update were scheduled (runs in microTask), otherwise must do it after reconcile to ensure it's in the DOM
         }
         this.next_cache.set(key, cached_inst)
@@ -704,7 +702,7 @@ let process_tag_child = (el: Element, v: Node | Text | UITree): Node | Inst => {
   let child_node_or_inst
   // TODO disallow `Node`s in templates?
   if (is_node(v)) {
-    let is_singleton = _current_inst && inst_to_comp_class(_current_inst).singleton // Singletons: Can make sense to not clone, if user wants to use a specific node in a singleton component
+    let is_singleton = _current_inst && !inst_to_comp_class(_current_inst).cache_ui_tree // Singletons: Can make sense to not clone, if user wants to use a specific node in a singleton component
     child_node_or_inst = is_singleton ? v : v.cloneNode(true)
   } else child_node_or_inst = _h(v)
   if (is_node(child_node_or_inst)) el.appendChild(child_node_or_inst) // PERF .append() faster?
@@ -725,100 +723,98 @@ let process_hole = (inst_or_node: Inst | Node, prop: string, static_hole: HolePr
   })
 }
 
-let _h = (arg: UITree): El | Inst => {
-  let el: El | undefined
-  let { _: tag /*= 'div' TODO*/ } = arg
+let _h = (ui_tree: UITree): El | Inst => {
+  let { _: tag } = ui_tree
   if (is_str(tag)) {
-    el = process_tag(tag)
-    for (let prop_key in arg)
+    let el = process_tag(tag)
+    for (let prop_key in ui_tree)
       if (!prop_key.startsWith('_')) {
-        let prop_value = arg[prop_key]
+        let prop_value = ui_tree[prop_key]
         if (prop_value instanceof HoleProto) process_hole(el, prop_key, prop_value)
         else process_tag_prop(el, prop_key, prop_value)
       }
-  } /* is component */ else {
-    let comp = tag
-    let tag_inst = insts_pool.get(comp)?.pop()
-    let did_not_have_tag_inst = !tag_inst
-    if (did_not_have_tag_inst) tag_inst = new comp()
-    assert_exists(tag_inst)
+    return el as El
+  }
+  /* is component */
+  let comp = tag
+  let tag_inst = insts_pool.get(comp)?.pop()
+  let did_not_have_tag_inst = !tag_inst
+  if (did_not_have_tag_inst) tag_inst = new comp()
+  assert_exists(tag_inst)
 
-    //#region process_inst_props
+  //#region process_inst_props
+  let is_static_inst = true // no ref or holes; ref means it should be further `update`d in parent `update()`
+  let props = ui_tree
+  for (let prop_key in props)
+    if (!prop_key.startsWith('_')) {
+      let prop_value = props[prop_key]
 
-    let is_static_inst = true // no ref or holes; ref means it should be further `update`d in parent `update()`
-    let props = arg
-    for (let prop_key in props)
-      if (!prop_key.startsWith('_')) {
-        let prop_value = props[prop_key]
-
-        // we are processing a template
-        if (_current_inst) {
-          if (prop_value instanceof HoleProto) {
-            is_static_inst = false
-            process_hole(tag_inst, prop_key, prop_value)
-            continue
-          }
-          // associate handler to component
-          // any array or obj could be a partial, we mark them as such just in case - TODO could put special key in obj (or just "_") to distinguish partial from regular obj
-          else if (is_fn(prop_value) || is_arr_or_obj(prop_value)) {
-            let curr_comp = inst_to_comp_class(_current_inst)
-            // if we could know if an obj is a partial we could create the partial class here
-            // owner_comp set in `partial` when processing a partial inst that itself has a partial/handler
-            handler_or_partial__owner_comp_class.set(prop_value as any, curr_comp.owner_comp ?? curr_comp)
-          } else if (prop_key == 'ref') {
-            is_static_inst = false // ref means it will be further updated in update
-            assert_exists(_current_inst)
-            assert(is_str(prop_value)) // refs are strings
-            _current_inst[prop_value] = tag_inst
-            continue
-          }
-        }
-
-        tag_inst._changed.set(prop_key, undefined)
-        tag_inst[prop_key] = prop_value
-      }
-
-    if (is_static_inst) tag_inst._is_static = true
-    //#endregion
-
-    //#region finish inst creation
-    if (did_not_have_tag_inst) {
-      if (!comp._ui_tree) {
-        let el_or_ui_tree = tag_inst.create?.()
-        if (is_node(el_or_ui_tree)) {
-          // if create returns DOM
-          ;(el_or_ui_tree as InstEl)[$inst] = tag_inst
-          tag_inst._el = el_or_ui_tree
-        } else if (exists(el_or_ui_tree)) comp._ui_tree = el_or_ui_tree // if create returns UITree
-      }
-      // no `else`, this is intentional - will have ui_tree only if create does not return DOM node
-      if (comp._ui_tree) {
-        let el_or_child_inst = with_current_inst(tag_inst, _h, comp._ui_tree) as InstEl | Inst
-
-        if (is_node(el_or_child_inst)) {
-          let child_inst = el_to_inst_el_is_part_of(el_or_child_inst)
-          if (child_inst)
-            tag_inst._el_inst = child_inst // if el already has an inst (eg because inside component the first child was <Container>), save it in _el_inst
-            // rewrite that element's inst to this one
-          ;(el_or_child_inst as InstEl)[$inst] = tag_inst
-          tag_inst._el = el_or_child_inst
-        } else {
-          // el_or_child_inst is inst, and has no ._el - TODO change this to check ._el if we always return inst
-        }
-      }
-
+      // we are processing a template
       if (_current_inst) {
-        tag_inst._parent_inst = _current_inst
-        ;(_current_inst._child_insts ??= new Set()).add(tag_inst)
+        if (prop_value instanceof HoleProto) {
+          is_static_inst = false
+          process_hole(tag_inst, prop_key, prop_value)
+          continue
+        } else if (is_fn(prop_value) || is_ui_tree(prop_value)) {
+          // associate handler or partial to the component they were defined in
+          // when processing a partial inst that itself has a partial/handler, associate it with its owner_inst's component
+          let owner_comp = inst_to_comp_class(_current_inst instanceof PartialComp ? _current_inst._owner_inst : _current_inst) // prettier-ignore
+          handler_or_partial__owner_comp_class.set(prop_value as any, owner_comp)
+        } else if (prop_key == 'ref') {
+          is_static_inst = false // ref means it will be further updated in update
+          assert_exists(_current_inst)
+          assert(is_str(prop_value)) // refs are strings
+          _current_inst[prop_value] = tag_inst
+          continue
+        }
+      }
+
+      tag_inst._changed.set(prop_key, undefined)
+      tag_inst[prop_key] = prop_value
+    }
+
+  if (is_static_inst) tag_inst._is_static = true
+  //#endregion
+
+  //#region finish inst creation
+  if (did_not_have_tag_inst) {
+    let ui_tree = comp._ui_tree
+    if (!ui_tree) {
+      let el_or_ui_tree = tag_inst.create?.()
+      if (is_node(el_or_ui_tree)) {
+        // if create returns DOM
+        ;(el_or_ui_tree as InstEl)[$inst] = tag_inst
+        tag_inst._el = el_or_ui_tree
+      } else if (exists(el_or_ui_tree)) {
+        // if create returns UITree
+        ui_tree = el_or_ui_tree
+        if (comp.cache_ui_tree) comp._ui_tree = ui_tree // otherwise can be gc'ed
       }
     }
-    //#endregion
+    // no `else`, this is intentional - will have ui_tree only if create does not return DOM node
+    if (ui_tree) {
+      let el_or_child_inst = with_current_inst(tag_inst, _h, comp._ui_tree) as InstEl | Inst
 
-    el = tag_inst._el
-    if (!el) return tag_inst
+      if (is_node(el_or_child_inst)) {
+        let child_inst = el_to_inst_el_is_part_of(el_or_child_inst)
+        if (child_inst)
+          tag_inst._el_inst = child_inst // if el already has an inst (eg because inside component the first child was <Container>), save it in _el_inst
+          // rewrite that element's inst to this one
+        ;(el_or_child_inst as InstEl)[$inst] = tag_inst
+        tag_inst._el = el_or_child_inst
+      } else {
+        // el_or_child_inst is inst, and has no ._el - TODO change this to check ._el if we always return inst
+      }
+    }
+
+    if (_current_inst) {
+      tag_inst._parent_inst = _current_inst
+      ;(_current_inst._child_insts ??= new Set()).add(tag_inst)
+    }
   }
+  //#endregion
 
-  return el as El // here there will always be an El
+  return tag_inst
 }
 /** When used outside template fns, should not use When/Each, so will always return El */
 export let h = _h as (arg: UITree) => El
@@ -880,6 +876,7 @@ let update_holes = (inst: Inst) => {
     for (let hole of inst._holes) {
       // TODO invoke with the right owner `inst` and `each_inst`
       assert_exists(_current_inst)
+      // TODO for partials: If/Slot want current_inst here, but Each wants each_inst - must distinguish, or just know $('prop') means `inst.prop` not `each_inst.prop`
       let v = is_str(hole.fn) ? _current_inst[hole.fn] : hole.fn()
       // TODO custom equals
       if (v != hole.current_value) {
@@ -902,7 +899,7 @@ let _update_inst = (inst: Inst) => {
 
   // mount static child insts
   if (!inst._mounted && inst._child_insts)
-    for (let child_inst of inst._child_insts) if (child_inst._is_static) trigger_update(child_inst) // this should work for ._el's inst as well, just another static inst
+    for (let child_inst of inst._child_insts) if (child_inst._is_static) trigger_update(child_inst) // this should work for ._el_inst as well, just another static inst
 
   if (inst._mounted) inst.cleanup?.()
   else { inst.mount?.(); inst._mounted = true } // prettier-ignore
@@ -919,11 +916,12 @@ let _update_inst = (inst: Inst) => {
 
   inst._changed.clear()
 }
-export let trigger_update = (inst: Inst) => with_current_inst(inst._owner_inst ?? inst, _update_inst, inst)
+export let trigger_update = (inst: Inst) =>
+  with_current_inst(inst instanceof PartialComp ? inst._owner_inst : inst, _update_inst, inst)
 
 export let update = <Props extends Component>(
   el_or_inst: InstEl | Inst,
-  props: Partial<Props>,
+  props: PartialComp<Props>,
   should_trigger_update = true,
 ) => {
   let inst = get_inst(el_or_inst) as Props
@@ -947,6 +945,7 @@ export let mount = (inst: Inst, where?: HTMLElement) => {
 
 export let unmount = (inst: Inst) => {
   inst.cleanup?.()
+  inst.unmount?.()
   effects.delete(inst)
   if (inst._child_insts) for (let child_inst of inst._child_insts) unmount(child_inst)
 }
