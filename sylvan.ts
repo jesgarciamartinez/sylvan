@@ -22,19 +22,19 @@ function assert_exists<T>(v: T): asserts v is NonNullable<T> {
   }
 }
 
-function assert_is_node(v: any): asserts v is Node {
-  if (__DEV__) {
-    if (!(v instanceof Node)) {
-      throw new Error(`Assertion failed: expected ${v} to be instanceof Node.`)
-    }
-  }
-}
+// function assert_is_node(v: any): asserts v is Node {
+//   if (__DEV__) {
+//     if (!(v instanceof Node)) {
+//       throw new Error(`Assertion failed: expected ${v} to be instanceof Node.`)
+//     }
+//   }
+// }
 
 function assert_is<T>(_v: any): asserts _v is T {}
 
-let TODO = (s?: string) => {
-  if (__DEV__) throw new Error(`TODO ${s ?? ''}`)
-}
+// let TODO = (s?: string) => {
+//   if (__DEV__) throw new Error(`TODO ${s ?? ''}`)
+// }
 // let TODO = console.error.bind(console, 'TODO')
 
 //#endregion
@@ -346,7 +346,6 @@ export let each_inst: Inst
 class Each extends Component {
   // props
   declare item_template: UITree
-  declare item_update: () => void
   declare array: any[]
   getKey?: (item: any) => string // for immutable items
 
@@ -373,7 +372,7 @@ class Each extends Component {
         if (cached_inst) this.curr_cache.delete(key)
         else {
           assert_exists(_current_inst) // TODO is it `this`?
-          cached_inst = instantiate_partial(this.item_template, _current_inst, this.item_update)
+          cached_inst = instantiate_partial(this.item_template, _current_inst)
           ;(new_insts ??= new Map()).set(item, cached_inst) // for mount - could just `update(item_inst, item)` here only if update were scheduled (runs in microTask), otherwise must do it after reconcile to ensure it's in the DOM
         }
         this.next_cache.set(key, cached_inst)
@@ -417,13 +416,8 @@ class Each extends Component {
   }
 }
 
-export let $each = (
-  ref: string,
-  item_template: UITree,
-  item_update: (item: any, item_inst: Inst & any, i: number) => void,
-) => {
-  return { _: Each, ref, template: item_template, update_fn: item_update }
-}
+export let $each = (ref: string, item_template: UITree) => ({ _: Each, ref, item_template })
+
 export let each = (ref: string, array_or_array_key: any[] | string /*, item_update?: any*/) => {
   assert_exists(_current_inst)
   let Each_inst = _current_inst[ref] as Inst
@@ -682,8 +676,6 @@ let process_tag_prop = (el: Element, prop_key: string, value: any) => {
   }
 }
 
-let insts_pool = new Map<CompClass, Array<Inst>>() // TODO - or delete this and have do it in userland by having the component constructor return an inst from the pool
-
 let process_hole = (inst_or_node: Inst | Node, prop: string, static_hole: HoleProto) => {
   assert_exists(_current_inst)
   ;(_current_inst._holes ??= []).push({
@@ -696,210 +688,215 @@ let process_hole = (inst_or_node: Inst | Node, prop: string, static_hole: HolePr
   })
 }
 
-// https://github.com/wooorm/svg-tag-names/blob/main/index.js
-let svg_tags = new Set([
-    'a',
-    'altGlyph',
-    'altGlyphDef',
-    'altGlyphItem',
-    'animate',
-    'animateColor',
-    'animateMotion',
-    'animateTransform',
-    'animation',
-    'audio',
-    'canvas',
-    'circle',
-    'clipPath',
-    'color-profile',
-    'cursor',
-    'defs',
-    'desc',
-    'discard',
-    'ellipse',
-    'feBlend',
-    'feColorMatrix',
-    'feComponentTransfer',
-    'feComposite',
-    'feConvolveMatrix',
-    'feDiffuseLighting',
-    'feDisplacementMap',
-    'feDistantLight',
-    'feDropShadow',
-    'feFlood',
-    'feFuncA',
-    'feFuncB',
-    'feFuncG',
-    'feFuncR',
-    'feGaussianBlur',
-    'feImage',
-    'feMerge',
-    'feMergeNode',
-    'feMorphology',
-    'feOffset',
-    'fePointLight',
-    'feSpecularLighting',
-    'feSpotLight',
-    'feTile',
-    'feTurbulence',
-    'filter',
-    'font',
-    'font-face',
-    'font-face-format',
-    'font-face-name',
-    'font-face-src',
-    'font-face-uri',
-    'foreignObject',
-    'g',
-    'glyph',
-    'glyphRef',
-    'handler',
-    'hkern',
-    'iframe',
-    'image',
-    'line',
-    'linearGradient',
-    'listener',
-    'marker',
-    'mask',
-    'metadata',
-    'missing-glyph',
-    'mpath',
-    'path',
-    'pattern',
-    'polygon',
-    'polyline',
-    'prefetch',
-    'radialGradient',
-    'rect',
-    'script',
-    'set',
-    'solidColor',
-    'stop',
-    'style',
-    'svg',
-    'switch',
-    'symbol',
-    'tbreak',
-    'text',
-    'textArea',
-    'textPath',
-    'title',
-    'tref',
-    'tspan',
-    'unknown',
-    'use',
-    'video',
-    'view',
-    'vkern',
-  ]),
-  is_svg = (s: string) => svg_tags.has(s)
-let process_tag = (tag: string): El => {
-  let el
-  let starts_with_dot = tag.startsWith('.')
-  if (starts_with_dot || tag.startsWith('#')) {
-    el = document.createElement('div')
-    el[starts_with_dot ? 'className' : 'id'] = tag.slice(1)
-  } else
-    el = is_svg(tag)
-      ? document.createElementNS('http://www.w3.org/2000/svg', tag)
-      : document.createElement(tag)
+export let h: (ui_tree: UITree) => El | Inst
+{
+  // https://github.com/wooorm/svg-tag-names/blob/main/index.js
+  let svg_tags = new Set([
+      'a',
+      'altGlyph',
+      'altGlyphDef',
+      'altGlyphItem',
+      'animate',
+      'animateColor',
+      'animateMotion',
+      'animateTransform',
+      'animation',
+      'audio',
+      'canvas',
+      'circle',
+      'clipPath',
+      'color-profile',
+      'cursor',
+      'defs',
+      'desc',
+      'discard',
+      'ellipse',
+      'feBlend',
+      'feColorMatrix',
+      'feComponentTransfer',
+      'feComposite',
+      'feConvolveMatrix',
+      'feDiffuseLighting',
+      'feDisplacementMap',
+      'feDistantLight',
+      'feDropShadow',
+      'feFlood',
+      'feFuncA',
+      'feFuncB',
+      'feFuncG',
+      'feFuncR',
+      'feGaussianBlur',
+      'feImage',
+      'feMerge',
+      'feMergeNode',
+      'feMorphology',
+      'feOffset',
+      'fePointLight',
+      'feSpecularLighting',
+      'feSpotLight',
+      'feTile',
+      'feTurbulence',
+      'filter',
+      'font',
+      'font-face',
+      'font-face-format',
+      'font-face-name',
+      'font-face-src',
+      'font-face-uri',
+      'foreignObject',
+      'g',
+      'glyph',
+      'glyphRef',
+      'handler',
+      'hkern',
+      'iframe',
+      'image',
+      'line',
+      'linearGradient',
+      'listener',
+      'marker',
+      'mask',
+      'metadata',
+      'missing-glyph',
+      'mpath',
+      'path',
+      'pattern',
+      'polygon',
+      'polyline',
+      'prefetch',
+      'radialGradient',
+      'rect',
+      'script',
+      'set',
+      'solidColor',
+      'stop',
+      'style',
+      'svg',
+      'switch',
+      'symbol',
+      'tbreak',
+      'text',
+      'textArea',
+      'textPath',
+      'title',
+      'tref',
+      'tspan',
+      'unknown',
+      'use',
+      'video',
+      'view',
+      'vkern',
+    ]),
+    is_svg = (s: string) => svg_tags.has(s)
+  let process_tag = (tag: string): El => {
+    let el
+    let starts_with_dot = tag.startsWith('.')
+    if (starts_with_dot || tag.startsWith('#')) {
+      el = document.createElement('div')
+      el[starts_with_dot ? 'className' : 'id'] = tag.slice(1)
+    } else
+      el = is_svg(tag)
+        ? document.createElementNS('http://www.w3.org/2000/svg', tag)
+        : document.createElement(tag)
 
-  return el
-}
-
-export let h = (ui_tree: UITree): El | Inst => {
-  let { _: tag } = ui_tree
-  if (is_str(tag)) {
-    let el = process_tag(tag)
-    for (let prop_key in ui_tree)
-      if (!prop_key.startsWith('_')) {
-        let prop_value = ui_tree[prop_key]
-        if (prop_value instanceof HoleProto) process_hole(el, prop_key, prop_value)
-        else process_tag_prop(el, prop_key, prop_value)
-      }
-    return el as El
+    return el
   }
-  /* is component */
-  let comp = tag
-  let tag_inst = insts_pool.get(comp)?.pop()
-  let did_not_have_tag_inst = !tag_inst
-  if (did_not_have_tag_inst) tag_inst = new comp()
-  assert_exists(tag_inst)
 
-  //#region process_inst_props
-  let is_static_inst = true // no ref or holes; ref means it should be further `update`d in parent `update()`
-  let props = ui_tree
-  for (let prop_key in props)
-    if (!prop_key.startsWith('_')) {
-      let prop_value = props[prop_key]
+  let insts_pool = new Map<CompClass, Array<Inst>>() // TODO - or delete this and have do it in userland by having the component constructor return an inst from the pool
 
-      // we are processing a template
-      if (_current_inst) {
-        if (prop_value instanceof HoleProto) {
-          is_static_inst = false
-          process_hole(tag_inst, prop_key, prop_value)
-          continue
-        } else if (is_fn(prop_value) || is_ui_tree(prop_value)) {
-          // associate handler or partial to the component they were defined in
-          // when processing a partial inst that itself has a partial/handler, associate it with its owner_inst's component
-          let owner_comp = inst_to_comp_class(_current_inst instanceof PartialComp ? _current_inst._owner_inst : _current_inst) // prettier-ignore
-          handler_or_partial__owner_comp_class.set(prop_value as any, owner_comp)
-        } else if (prop_key == 'ref') {
-          is_static_inst = false // ref means it will be further updated in update
-          assert_exists(_current_inst)
-          assert(is_str(prop_value)) // refs are strings
-          _current_inst[prop_value] = tag_inst
-          continue
+  h = (ui_tree) => {
+    let { _: tag } = ui_tree
+    if (is_str(tag)) {
+      let el = process_tag(tag)
+      for (let prop_key in ui_tree)
+        if (!prop_key.startsWith('_')) {
+          let prop_value = ui_tree[prop_key]
+          if (prop_value instanceof HoleProto) process_hole(el, prop_key, prop_value)
+          else process_tag_prop(el, prop_key, prop_value)
+        }
+      return el as El
+    }
+    /* is component */
+    let comp = tag
+    let tag_inst = insts_pool.get(comp)?.pop()
+    let did_not_have_tag_inst = !tag_inst
+    if (did_not_have_tag_inst) tag_inst = new comp()
+    assert_exists(tag_inst)
+
+    //#region process_inst_props
+    let is_static_inst = true // no ref or holes; ref means it should be further `update`d in parent `update()`
+    let props = ui_tree
+    for (let prop_key in props)
+      if (!prop_key.startsWith('_')) {
+        let prop_value = props[prop_key]
+
+        // we are processing a template
+        if (_current_inst) {
+          if (prop_value instanceof HoleProto) {
+            is_static_inst = false
+            process_hole(tag_inst, prop_key, prop_value)
+            continue
+          } else if (is_fn(prop_value) || is_ui_tree(prop_value)) {
+            // associate handler or partial to the component they were defined in
+            // when processing a partial inst that itself has a partial/handler, associate it with its owner_inst's component
+            let owner_comp = inst_to_comp_class(_current_inst instanceof PartialComp ? _current_inst._owner_inst : _current_inst) // prettier-ignore
+            handler_or_partial__owner_comp_class.set(prop_value as any, owner_comp)
+          } else if (prop_key == 'ref') {
+            is_static_inst = false // ref means it will be further updated in update
+            assert_exists(_current_inst)
+            assert(is_str(prop_value)) // refs are strings
+            _current_inst[prop_value] = tag_inst
+            continue
+          }
+        }
+
+        tag_inst._changed.set(prop_key, undefined)
+        tag_inst[prop_key] = prop_value
+      }
+
+    if (is_static_inst) tag_inst._is_static = true
+    //#endregion
+
+    //#region finish inst creation
+    if (did_not_have_tag_inst) {
+      let ui_tree = comp._ui_tree
+      if (!ui_tree) {
+        let el_or_ui_tree = tag_inst.create?.()
+        if (is_node(el_or_ui_tree)) {
+          // if create returns DOM
+          ;(el_or_ui_tree as InstEl)[$inst] = tag_inst
+          tag_inst._el = el_or_ui_tree
+        } else if (exists(el_or_ui_tree)) {
+          // if create returns UITree
+          ui_tree = el_or_ui_tree
+          if (comp.cache_ui_tree) comp._ui_tree = ui_tree // otherwise can be gc'ed
+        }
+      }
+      // no `else`, this is intentional - will have ui_tree only if create does not return DOM node
+      if (ui_tree) {
+        let el_or_child_inst = with_current_inst(tag_inst, h, ui_tree) as InstEl | Inst
+
+        if (is_node(el_or_child_inst)) {
+          let child_inst = el_to_inst_el_is_part_of(el_or_child_inst)
+          if (child_inst)
+            tag_inst._el_inst = child_inst // if el already has an inst (eg because inside component the first child was <Container>), save it in _el_inst
+            // rewrite that element's inst to this one
+          ;(el_or_child_inst as InstEl)[$inst] = tag_inst
+          tag_inst._el = el_or_child_inst
+        } else {
+          // el_or_child_inst is inst, and has no ._el - TODO change this to check ._el if we always return inst
         }
       }
 
-      tag_inst._changed.set(prop_key, undefined)
-      tag_inst[prop_key] = prop_value
-    }
-
-  if (is_static_inst) tag_inst._is_static = true
-  //#endregion
-
-  //#region finish inst creation
-  if (did_not_have_tag_inst) {
-    let ui_tree = comp._ui_tree
-    if (!ui_tree) {
-      let el_or_ui_tree = tag_inst.create?.()
-      if (is_node(el_or_ui_tree)) {
-        // if create returns DOM
-        ;(el_or_ui_tree as InstEl)[$inst] = tag_inst
-        tag_inst._el = el_or_ui_tree
-      } else if (exists(el_or_ui_tree)) {
-        // if create returns UITree
-        ui_tree = el_or_ui_tree
-        if (comp.cache_ui_tree) comp._ui_tree = ui_tree // otherwise can be gc'ed
+      if (_current_inst) {
+        tag_inst._parent_inst = _current_inst
+        ;(_current_inst._child_insts ??= new Set()).add(tag_inst)
       }
     }
-    // no `else`, this is intentional - will have ui_tree only if create does not return DOM node
-    if (ui_tree) {
-      let el_or_child_inst = with_current_inst(tag_inst, h, ui_tree) as InstEl | Inst
+    //#endregion
 
-      if (is_node(el_or_child_inst)) {
-        let child_inst = el_to_inst_el_is_part_of(el_or_child_inst)
-        if (child_inst)
-          tag_inst._el_inst = child_inst // if el already has an inst (eg because inside component the first child was <Container>), save it in _el_inst
-          // rewrite that element's inst to this one
-        ;(el_or_child_inst as InstEl)[$inst] = tag_inst
-        tag_inst._el = el_or_child_inst
-      } else {
-        // el_or_child_inst is inst, and has no ._el - TODO change this to check ._el if we always return inst
-      }
-    }
-
-    if (_current_inst) {
-      tag_inst._parent_inst = _current_inst
-      ;(_current_inst._child_insts ??= new Set()).add(tag_inst)
-    }
+    return tag_inst
   }
-  //#endregion
-
-  return tag_inst
 }
 
 //#endregion
@@ -1004,7 +1001,7 @@ export let trigger_update = (inst: Inst) =>
 
 export let update = <Props extends Component>(
   el_or_inst: InstEl | Inst,
-  props: PartialComp<Props>,
+  props: Partial<Props>,
   should_trigger_update = true,
 ) => {
   let inst = get_inst(el_or_inst) as Props
