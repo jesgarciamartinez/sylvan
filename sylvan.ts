@@ -41,6 +41,7 @@ let TODO = (s?: string) => {
 
 let is_array = Array.isArray,
   is_arr_or_obj = (v: unknown) => v != null && typeof v === 'object',
+  is_obj = (v: unknown) => is_arr_or_obj(v) && !is_array(v),
   /** typeof v == 'function' */
   is_fn = (v: unknown): v is Function => typeof v == 'function',
   /** typeof v == 'string' */
@@ -101,7 +102,7 @@ export class Component {
   static _ui_tree?: UITree
   static singleton?: boolean
   static equals?: { [key: string]: (val: any, prev: any) => boolean }
-  static owner_comp?: CompClass // needed for _h, see below
+  static owner_comp?: CompClass // needed for _h: _h associates it to partials, then when partial instantiated, it determines owner inst
 
   _changed: Map<string, any /* <- previous value */> = new Map()
 
@@ -173,6 +174,7 @@ let get_ui_partial_inst = (partial: UITree, current_inst: Inst, partial_update_f
       constructor() { super() } // prettier-ignore
       static _ui_tree = partial
       // cannot set `update = partial_update_fn`, because it will override the parent's update in When
+      // update right now calls update_holes(), won't call partial_update_fn even if partial has one - delete this?
       update() { partial_update_fn?.call(this) } // prettier-ignore
       static owner_comp = owner_comp
     }
@@ -185,6 +187,7 @@ let get_ui_partial_inst = (partial: UITree, current_inst: Inst, partial_update_f
   let owner_inst = current_inst
   while (inst_to_comp_class(owner_inst) !== owner_comp) owner_inst = owner_inst._parent_inst as Inst // go up the inst tree to get owner_inst, it should always reach parent where partial was defined
   partial_inst._owner_inst = owner_inst
+  ;(owner_inst._partial_insts ?? new Set()).add(partial_inst) // <- TODO could be done on mount
 
   // partial_inst's child_insts should also have the same owner inst, recursively
   // TODO is this necessary? shouldn't be, since owner_comp is set in h() for partials
@@ -213,6 +216,7 @@ export let insert_partial = (
 ): Component | undefined => {
   // unmount prev partial
   if (prev_inst) for (let key in prev_inst) if (!key.startsWith('_')) prev_inst._owner_inst![key] = undefined // sync_partial_inst_with_owner_inst
+  prev_inst._owner_inst!._partial_insts!.delete(prev_inst)
 
   let prev_node = prev_inst._el
   // only do this if no next partial, otherwise the new partial will replace DOM nodes
@@ -340,63 +344,76 @@ export function when(when: boolean, ref: string): boolean {
 /*--------------------------------------------------------------------------------------------------------------------------------------------*/
 //#region Each
 
+export let each_inst: Inst
 class Each extends Component {
   // props
   declare item_template: UITree
   declare item_update: () => void
-  declare array: WeakKey[]
+  declare array: any[]
+  getKey?: (item: any) => string // for immutable items
 
   // inst
-  declare cache?: WeakMap<any, Inst>
-  declare current_dom_nodes?: any[]
+  _get_curr_cache_key(item: any) {
+    return this.getKey?.(item) ?? item
+  }
+  declare _el: HTMLElement
+  declare items_are_objs: boolean
+  curr_cache: Map<any, Inst> = new Map()
+  next_cache: Map<any, Inst> = new Map()
+  curr_dom_array: El[] = []
 
   create() { return { _: 'div', style: 'display: contents;' } } // prettier-ignore
 
   update() {
     if (c('array')) {
-      this.cache ??= new WeakMap<any, Inst>() // TODO clean up insts in cache no longer in array? with WeakMap will disappear if obj disappears
-
-      let { cache, array, item_template, item_update } = this
-
-      let next_dom_nodes: El[] = []
-      let new_insts: Inst[]
-      let new_items: any[]
-      for (let item of array) {
-        let item_inst = cache.get(item)
-        if (!item_inst) {
+      this.items_are_objs = !empty(this.array) && is_obj(this.array[0])
+      let next_dom_array: El[] = []
+      let new_insts: Map<any, Inst>
+      for (let item of this.array) {
+        let key = this._get_curr_cache_key(item)
+        let cached_inst = this.curr_cache.get(key)
+        if (cached_inst) this.curr_cache.delete(key)
+        else {
           assert_exists(_current_inst) // TODO is it `this`?
-          item_inst = get_ui_partial_inst(item_template, _current_inst, item_update)
-          cache.set(item, item_inst)
-
-          // could just `update(item_inst, item)` here only if update were scheduled (runs in microTask), otherwise must do it after reconcile to ensure it's in the DOM
-          ;(new_insts ??= []).push(item_inst)
-          ;(new_items ??= []).push(item)
+          cached_inst = get_ui_partial_inst(this.item_template, _current_inst, this.item_update)
+          ;(new_insts ??= new Map()).set(item, cached_inst) // for mount - could just `update(item_inst, item)` here only if update were scheduled (runs in microTask), otherwise must do it after reconcile to ensure it's in the DOM
         }
-        next_dom_nodes.push(item_inst._el!) // for now, should have ._el - TODO nested When, etc
+        this.next_cache.set(key, cached_inst)
+        next_dom_array.push(cached_inst._el!) // for now, should have ._el - TODO nested When, etc
       }
 
-      assert_is<HTMLElement>(this._el)
-      reconcile(this._el, this.current_dom_nodes ?? [], next_dom_nodes)
-      // @ts-expect-error
-      if (new_insts) for (let i = 0, len = new_insts.length; i < len; i++) update(new_insts[i], new_items[i])
+      reconcile(this._el, this.curr_dom_array, next_dom_array)
 
-      this.current_dom_nodes = next_dom_nodes
+      // item can be an object or a primitive
+      if (new_insts!) for (let [item, inst] of new_insts) update(inst, this.items_are_objs ? item : { item }) // mount
+      for (let [_, inst] of this.curr_cache) unmount(inst) // unmount
+      // TODO: when unmount -  prev_inst._owner_inst!._partial_insts!.delete(prev_inst)
+
+      let { next_cache } = this
+      this.curr_cache.clear()
+      this.next_cache = this.curr_cache
+      this.curr_cache = next_cache
+      this.curr_dom_array = next_dom_array
     }
 
     /* update insts when their obj changes
       we can't access item_instances from outside, so have to rely on global reactivity `set` to update them
       to do so we add the Each inst to effects, its `update` will execute any time anything changes, and inside it will check if it's one of its objs */
 
-    for (let [obj, keys] of changes) {
-      let item_inst = this.cache?.get(obj)
-      if (item_inst) {
-        let props = obj
-        // if it has the changed keys - not "whole obj changed" - only pass changed props - TODO could avoid for-loop here and inside update, using trigger_update
-        if (keys) { props = {}; for (let [key, _] of keys) props[key] = obj[key] } // prettier-ignore
-        // TODO BUG: should not set current_inst to item_inst here: use another global ('each_inst') instead of inst
-        // so with in an Each with holes (or item update fn), can use both `each_inst` for the item_inst and `inst` for the parent
-        // if there are nested lists: could have yet another, but better to force to put nested list in different component
-        update(item_inst, props)
+    if (this.items_are_objs) {
+      effects.add(this)
+      for (let [obj, keys] of changes) {
+        let item_inst = this.curr_cache.get(this._get_curr_cache_key(obj))
+        if (item_inst) {
+          let props = obj
+          // if it has the changed keys - not "whole obj changed" - only pass changed props - TODO could avoid having a for-loop here and inside update, using trigger_update
+          if (keys) { props = {}; for (let [key, _] of keys) props[key] = obj[key] } // prettier-ignore
+          // TODO BUG: should not set current_inst to item_inst here: use another global ('each_inst') instead of inst
+          // so within an Each with holes (or item update fn), can use both `each_inst` for the item_inst and `inst` for the parent
+          // if there are nested lists: could have yet another, but better to force to put nested list in different component
+          each_inst = item_inst
+          update(item_inst, props)
+        }
       }
     }
   }
@@ -745,7 +762,9 @@ let _h = (arg: UITree): El | Inst => {
           // any array or obj could be a partial, we mark them as such just in case - TODO could put special key in obj (or just "_") to distinguish partial from regular obj
           else if (is_fn(prop_value) || is_arr_or_obj(prop_value)) {
             let curr_comp = inst_to_comp_class(_current_inst)
-            handler_or_partial__owner_comp_class.set(prop_value as any, curr_comp.owner_comp ?? curr_comp) // owner_comp set in `partial` when processing a partial inst that itself has a partial/handler
+            // if we could know if an obj is a partial we could create the partial class here
+            // owner_comp set in `partial` when processing a partial inst that itself has a partial/handler
+            handler_or_partial__owner_comp_class.set(prop_value as any, curr_comp.owner_comp ?? curr_comp)
           } else if (prop_key == 'ref') {
             is_static_inst = false // ref means it will be further updated in update
             assert_exists(_current_inst)
@@ -877,14 +896,13 @@ let update_holes = (inst: Inst) => {
   }
 }
 
-let _update_inst = () => {
-  let inst = _current_inst!
-
+// TODO pass inst?
+let _update_inst = (inst: Inst) => {
   // FOR NOW: insts don't hold global subscriptions, they guard inside with `changed`, all effects are run
 
   // mount static child insts
   if (!inst._mounted && inst._child_insts)
-    for (let child_inst of inst._child_insts) if (child_inst._is_static) trigger_update(child_inst) // this should work for ._el_inst as well, just another static inst
+    for (let child_inst of inst._child_insts) if (child_inst._is_static) trigger_update(child_inst) // this should work for ._el's inst as well, just another static inst
 
   if (inst._mounted) inst.cleanup?.()
   else { inst.mount?.(); inst._mounted = true } // prettier-ignore
@@ -952,7 +970,6 @@ let effects = new Set<Effect>()
 
 // signature can be Map<any, Set<string> | undefined> - where keys in the map are changed objs (pojo/array/map/set) and values either don't apply (eg for array, maybe for set), or a set of changed keys
 //               or Map<any, Map<k,v> | undefined> - where values are maps that hold previous value, like in components
-// if we want to store Set previous values: Map <any, any>
 export let changes = new Map<any, Map<string, any> | undefined>() // could be WeakMap but we want to iterate it in Each - using some kind of iterable WeakMap would avoid needing to `effects.delete(inst)` in unmount
 
 export let changed = (

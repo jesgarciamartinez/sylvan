@@ -162,7 +162,3 @@ Holes are currently being implemented.
   - creating component instances while main thread is idle, and caching them
   - declaring some components as singleton so their DOM is only created once
   - more performant JSX transform, using arrays instead of objects to avoid triggering megamorphism
-
-
-
-
