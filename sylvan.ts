@@ -174,7 +174,7 @@ let instantiate_partial = (partial: UITree, current_inst: Inst, sync_refs: boole
   let owner_inst = current_inst
   while (inst_to_comp_class(owner_inst) !== owner_comp) owner_inst = owner_inst._parent_inst as Inst // go up the inst tree to get owner_inst, it should always reach parent where partial was defined
 
-  let partial_inst = _h({ _: PartialComp, _partial: partial, _sync_refs: sync_refs }) as PartialComp // by using _h, partial_inst should have _parent_inst == current_inst
+  let partial_inst = h({ _: PartialComp, _partial: partial, _sync_refs: sync_refs }) as PartialComp // by using _h, partial_inst should have _parent_inst == current_inst
   partial_inst._owner_inst = owner_inst
 
   return partial_inst
@@ -600,21 +600,6 @@ let with_current_inst = (new_inst: Inst | undefined, fn: Function, arg1?: any, a
   return res
 }
 
-let svg_tags = new Set(['svg', 'path']),
-  is_svg = (s: string) => svg_tags.has(s)
-let process_tag = (tag: string): El => {
-  let el
-  let starts_with_dot = tag.startsWith('.')
-  if (starts_with_dot || tag.startsWith('#')) {
-    el = document.createElement('div')
-    el[starts_with_dot ? 'className' : 'id'] = tag.slice(1)
-  } else
-    el = is_svg(tag)
-      ? document.createElementNS('http://www.w3.org/2000/svg', tag)
-      : document.createElement(tag)
-
-  return el
-}
 let process_tag_prop = (el: Element, prop_key: string, value: any) => {
   switch (prop_key) {
     case 'ref':
@@ -643,7 +628,7 @@ let process_tag_prop = (el: Element, prop_key: string, value: any) => {
         if (is_str(v)) node = document.createTextNode(v)
         else if (is_node(v)) node = v // for Text
         /* is_ui_tree */ else {
-          child_node_or_inst = _h(v)
+          child_node_or_inst = h(v)
           node = is_node(child_node_or_inst) ? child_node_or_inst : child_node_or_inst._el
         }
         if (node) {
@@ -711,7 +696,119 @@ let process_hole = (inst_or_node: Inst | Node, prop: string, static_hole: HolePr
   })
 }
 
-let _h = (ui_tree: UITree): El | Inst => {
+// https://github.com/wooorm/svg-tag-names/blob/main/index.js
+let svg_tags = new Set([
+    'a',
+    'altGlyph',
+    'altGlyphDef',
+    'altGlyphItem',
+    'animate',
+    'animateColor',
+    'animateMotion',
+    'animateTransform',
+    'animation',
+    'audio',
+    'canvas',
+    'circle',
+    'clipPath',
+    'color-profile',
+    'cursor',
+    'defs',
+    'desc',
+    'discard',
+    'ellipse',
+    'feBlend',
+    'feColorMatrix',
+    'feComponentTransfer',
+    'feComposite',
+    'feConvolveMatrix',
+    'feDiffuseLighting',
+    'feDisplacementMap',
+    'feDistantLight',
+    'feDropShadow',
+    'feFlood',
+    'feFuncA',
+    'feFuncB',
+    'feFuncG',
+    'feFuncR',
+    'feGaussianBlur',
+    'feImage',
+    'feMerge',
+    'feMergeNode',
+    'feMorphology',
+    'feOffset',
+    'fePointLight',
+    'feSpecularLighting',
+    'feSpotLight',
+    'feTile',
+    'feTurbulence',
+    'filter',
+    'font',
+    'font-face',
+    'font-face-format',
+    'font-face-name',
+    'font-face-src',
+    'font-face-uri',
+    'foreignObject',
+    'g',
+    'glyph',
+    'glyphRef',
+    'handler',
+    'hkern',
+    'iframe',
+    'image',
+    'line',
+    'linearGradient',
+    'listener',
+    'marker',
+    'mask',
+    'metadata',
+    'missing-glyph',
+    'mpath',
+    'path',
+    'pattern',
+    'polygon',
+    'polyline',
+    'prefetch',
+    'radialGradient',
+    'rect',
+    'script',
+    'set',
+    'solidColor',
+    'stop',
+    'style',
+    'svg',
+    'switch',
+    'symbol',
+    'tbreak',
+    'text',
+    'textArea',
+    'textPath',
+    'title',
+    'tref',
+    'tspan',
+    'unknown',
+    'use',
+    'video',
+    'view',
+    'vkern',
+  ]),
+  is_svg = (s: string) => svg_tags.has(s)
+let process_tag = (tag: string): El => {
+  let el
+  let starts_with_dot = tag.startsWith('.')
+  if (starts_with_dot || tag.startsWith('#')) {
+    el = document.createElement('div')
+    el[starts_with_dot ? 'className' : 'id'] = tag.slice(1)
+  } else
+    el = is_svg(tag)
+      ? document.createElementNS('http://www.w3.org/2000/svg', tag)
+      : document.createElement(tag)
+
+  return el
+}
+
+export let h = (ui_tree: UITree): El | Inst => {
   let { _: tag } = ui_tree
   if (is_str(tag)) {
     let el = process_tag(tag)
@@ -781,7 +878,7 @@ let _h = (ui_tree: UITree): El | Inst => {
     }
     // no `else`, this is intentional - will have ui_tree only if create does not return DOM node
     if (ui_tree) {
-      let el_or_child_inst = with_current_inst(tag_inst, _h, comp._ui_tree) as InstEl | Inst
+      let el_or_child_inst = with_current_inst(tag_inst, h, ui_tree) as InstEl | Inst
 
       if (is_node(el_or_child_inst)) {
         let child_inst = el_to_inst_el_is_part_of(el_or_child_inst)
@@ -804,8 +901,6 @@ let _h = (ui_tree: UITree): El | Inst => {
 
   return tag_inst
 }
-/** When used outside template fns, should not use When/Each, so will always return El */
-export let h = _h as (arg: UITree) => El
 
 //#endregion
 /*--------------------------------------------------------------------------------------------------------------------------------------------*/
