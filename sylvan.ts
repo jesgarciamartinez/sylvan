@@ -632,64 +632,55 @@ let process_tag_prop = (el: Element, prop_key: string, value: any) => {
       el.style.cssText = value
       break
     case 'children':
-      if (is_array(value)) {
-        let last_appended_child: Node | undefined // Element | Text | undefined
-        let pending_slot: Inst | undefined
-        for (let i = 0, len = value.length; i < len; i++) {
-          let child_node_or_inst = process_tag_child(el, value[i] as UITree)
-          if (!is_node(child_node_or_inst)) {
+      let last_appended_child: Node | undefined // | Text
+      let pending_slot: Inst | undefined
+      let _is_array = is_array(value)
+      for (let i = 0, len = _is_array ? value.length : 1; i < len; i++) {
+        let v = (_is_array ? value[i] : value) as UITree // TODO: can be a string or Text
+        let child_node_or_inst = _h(v)
+        let node = is_node(child_node_or_inst) ? child_node_or_inst : child_node_or_inst._el
+        if (node) {
+          el.appendChild(node) // PERF .append() faster?
+          if (pending_slot) {
+            // resolve pending slot from last iteration: this iteration has child_el, so can anchor to it
             assert_exists(_current_inst)
-            let inst = child_node_or_inst as Inst
-            // resolve pending slot from last iteration: this iteration is_hole, so must create comment node
-            if (pending_slot) {
-              let comment_node = document.createComment('')
-              el.appendChild(comment_node)
+            pending_slot._inspos = 'beforebegin'
+            pending_slot._anchor = node
+            pending_slot = undefined
+          }
+        } else {
+          assert_exists(_current_inst)
+          let inst = child_node_or_inst as Inst
+          // resolve pending slot from last iteration: this iteration is a "hole", so must create comment node
+          if (pending_slot) {
+            let comment_node = document.createComment('')
+            el.appendChild(comment_node)
 
-              // inspos undefined here means comment node will get replaced
-              pending_slot._anchor = comment_node
-              pending_slot = undefined
-            }
+            // inspos undefined here means comment node will get replaced
+            pending_slot._anchor = comment_node
+            pending_slot = undefined
+          }
 
-            let anchor: Node | undefined // Element | Text | undefined
-            let inspos: InsertPosition
-            if (i == 0) {
-              inspos = 'afterbegin'
-              anchor = el
-            } else if (i == len - 1) {
-              inspos = 'beforeend'
-              anchor = el
-            } else if (last_appended_child) {
-              inspos = 'afterend'
-              anchor = last_appended_child
-            } else pending_slot = inst
+          let anchor: Node | undefined // Element | Text | undefined
+          let inspos: InsertPosition
+          if (i == 0) {
+            inspos = 'afterbegin'
+            anchor = el
+          } else if (i == len - 1) {
+            inspos = 'beforeend'
+            anchor = el
+          } else if (last_appended_child) {
+            inspos = 'afterend'
+            anchor = last_appended_child
+          } else pending_slot = inst
 
-            if (anchor) {
-              inst._anchor = anchor
-              // @ts-expect-error - inspos will exist if anchor exists
-              inst._inspos = inspos
-            }
-            last_appended_child = undefined // should happen at the end of the scope in case we use last iteration's value
-          } else {
-            assert_is_node(child_node_or_inst)
-            let node = child_node_or_inst
-
-            if (pending_slot) {
-              // resolve pending slot from last iteration: this iteration has child_el, so can anchor to it
-              assert_exists(_current_inst)
-              pending_slot._inspos = 'beforebegin'
-              pending_slot._anchor = node // text node is safe to use even with translations, which currently only change its textContent (not changing the Text for another one) - BUG: clone text node
-              pending_slot = undefined
-            }
-            last_appended_child = node // should happen at the end of the scope in case we use last iteration's value
+          if (anchor) {
+            inst._anchor = anchor
+            // @ts-expect-error - inspos will exist if anchor exists
+            inst._inspos = inspos
           }
         }
-      } /* if children is not array */ else {
-        let child_node_or_inst = process_tag_child(el, value)
-        if (!is_node(child_node_or_inst)) {
-          assert_exists(_current_inst)
-          child_node_or_inst._anchor = el
-          child_node_or_inst._inspos = 'afterbegin'
-        }
+        last_appended_child = node // should happen at the end of the scope in case we use last iteration's value
       }
       break
     default:
@@ -697,12 +688,6 @@ let process_tag_prop = (el: Element, prop_key: string, value: any) => {
       else if (value == null) el.removeAttribute(prop_key)
       else el.setAttribute(prop_key, value)
   }
-}
-let process_tag_child = (el: Element, v: UITree): Node | Inst => {
-  let child_node_or_inst = _h(v)
-  let node = is_node(child_node_or_inst) ? child_node_or_inst : child_node_or_inst._el
-  if (node) el.appendChild(node) // PERF .append() faster?
-  return node ?? child_node_or_inst
 }
 
 let insts_pool = new Map<CompClass, Array<Inst>>() // TODO - or delete this and have do it in userland by having the component constructor return an inst from the pool
