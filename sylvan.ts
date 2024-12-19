@@ -636,7 +636,7 @@ let process_tag_prop = (el: Element, prop_key: string, value: any) => {
         let last_appended_child: Node | undefined // Element | Text | undefined
         let pending_slot: Inst | undefined
         for (let i = 0, len = value.length; i < len; i++) {
-          let child_node_or_inst = process_tag_child(el, value[i] as Element | Text | UITree) // user should only pass those types as children
+          let child_node_or_inst = process_tag_child(el, value[i] as UITree)
           if (!is_node(child_node_or_inst)) {
             assert_exists(_current_inst)
             let inst = child_node_or_inst as Inst
@@ -698,15 +698,11 @@ let process_tag_prop = (el: Element, prop_key: string, value: any) => {
       else el.setAttribute(prop_key, value)
   }
 }
-let process_tag_child = (el: Element, v: Node | Text | UITree): Node | Inst => {
-  let child_node_or_inst
-  // TODO disallow `Node`s in templates?
-  if (is_node(v)) {
-    let is_singleton = _current_inst && !inst_to_comp_class(_current_inst).cache_ui_tree // Singletons: Can make sense to not clone, if user wants to use a specific node in a singleton component
-    child_node_or_inst = is_singleton ? v : v.cloneNode(true)
-  } else child_node_or_inst = _h(v)
-  if (is_node(child_node_or_inst)) el.appendChild(child_node_or_inst) // PERF .append() faster?
-  return child_node_or_inst
+let process_tag_child = (el: Element, v: UITree): Node | Inst => {
+  let child_node_or_inst = _h(v)
+  let node = is_node(child_node_or_inst) ? child_node_or_inst : child_node_or_inst._el
+  if (node) el.appendChild(node) // PERF .append() faster?
+  return node ?? child_node_or_inst
 }
 
 let insts_pool = new Map<CompClass, Array<Inst>>() // TODO - or delete this and have do it in userland by having the component constructor return an inst from the pool
