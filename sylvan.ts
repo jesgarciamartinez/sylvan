@@ -632,17 +632,24 @@ let process_tag_prop = (el: Element, prop_key: string, value: any) => {
       el.style.cssText = value
       break
     case 'children':
-      let last_appended_child: Node | undefined // | Text
+      let last_appended_child: Node | undefined
       let pending_slot: Inst | undefined
       let _is_array = is_array(value)
       for (let i = 0, len = _is_array ? value.length : 1; i < len; i++) {
-        let v = (_is_array ? value[i] : value) as UITree // TODO: can be a string or Text
-        let child_node_or_inst = _h(v)
-        let node = is_node(child_node_or_inst) ? child_node_or_inst : child_node_or_inst._el
+        let v = (_is_array ? value[i] : value) as UITree | Text
+
+        let child_node_or_inst
+        let node: Node | undefined
+        if (is_str(v)) node = document.createTextNode(v)
+        else if (is_node(v)) node = v // for Text
+        /* is_ui_tree */ else {
+          child_node_or_inst = _h(v)
+          node = is_node(child_node_or_inst) ? child_node_or_inst : child_node_or_inst._el
+        }
         if (node) {
-          el.appendChild(node) // PERF .append() faster?
+          el.appendChild(node) // PERF .append() faster? but only el has it, not node
           if (pending_slot) {
-            // resolve pending slot from last iteration: this iteration has child_el, so can anchor to it
+            // resolve pending slot from last iteration: this iteration has node, so can anchor to it
             assert_exists(_current_inst)
             pending_slot._inspos = 'beforebegin'
             pending_slot._anchor = node
@@ -651,7 +658,7 @@ let process_tag_prop = (el: Element, prop_key: string, value: any) => {
         } else {
           assert_exists(_current_inst)
           let inst = child_node_or_inst as Inst
-          // resolve pending slot from last iteration: this iteration is a "hole", so must create comment node
+          // resolve pending slot from last iteration: this iteration is a "hole" (an inst without ._el), so must create comment node
           if (pending_slot) {
             let comment_node = document.createComment('')
             el.appendChild(comment_node)
