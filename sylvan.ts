@@ -75,8 +75,8 @@ interface Hole<T> {
   current_value: T
   inst_or_node: Inst | Node
   prop: string
-  deps?: Array<string /*| {obj, path} for global deps*/> // can: not exist (ie holes execute always) or be static - can default to holes that always execute and allow static / dynamic deps as optimization
   owner_inst: Inst // to invoke fn with: required if Holes can be global effects – can get from inst_or_node only if it's inst: inst_or_node.owner_inst ?? inst_or_node.parent_inst
+  deps?: Array<string /*| {obj, path} for global deps*/> // can: not exist (ie holes execute always) or be static - can default to holes that always execute and allow static / dynamic deps as optimization
 }
 
 /** returned by `$(() => inst.prop)` in `component.create()`*/
@@ -109,7 +109,6 @@ export class Component {
   _el?: El // TODO? should be Node?
   // if changed to 'el', check partial key syncing that relies on _-prefixed keys
 
-  _el_inst?: Inst // Inst the _el had if _el comes from a component itself, e.g. <div> will have no _el_inst, but <MyComp> will - TODO necessary? should be in _child_insts
   _parent_inst?: Inst
   _child_insts?: Set<Inst> // with only refs, since non-static will have a ref for sure, could just add _static_child_insts instead of all _child_insts - NO, must be able to call unmount on all child insts - either child_insts with is_static flag or iterate through all props to see if there is an inst -> unreliable
 
@@ -141,6 +140,10 @@ export type UITree = AnyObject & { _: string | CompClass; ref?: string } // | st
 let get_inst = (el_or_inst: InstEl | Inst): Inst =>
   is_node(el_or_inst) ? el_to_inst_el_is_part_of(el_or_inst) : el_or_inst
 let inst_to_comp_class = (inst: Inst): CompClass => inst.constructor as CompClass
+let owner_inst_or_curr_inst = () => {
+  assert_exists(curr_inst)
+  return curr_inst instanceof PartialComp ? curr_inst._owner_inst : curr_inst
+}
 
 //#endregion
 /*--------------------------------------------------------------------------------------------------------------------------------------------*/
@@ -152,12 +155,15 @@ let handler_or_partial__owner_comp_class = new WeakMap<Handler | UITree, CompCla
 let is_ui_tree = (x: any): x is UITree => is_obj(x) && (is_str(x._) || x._ instanceof Component || is_fn(x._))
 
 class PartialComp extends Component {
-  // must be prefixed with _, because non-prefixed properties are refs that can be synced
-  // TODO BUG will sync methods too
+  // MUST BE PREFIXED WITH _, because
+  // - non-prefixed properties are refs that can be synced
+  // - _-prefixed properties are not processed in h()
+  // TODO BUG will sync methods too?
   declare _partial: UITree
   declare _owner_inst: Inst
   declare _sync_refs: boolean
-  create() { return this.partial } // prettier-ignore
+
+  create() { return this._partial } // prettier-ignore
   static cache_ui_tree = false // avoids having to do this right after instantiating: `delete PartialComp._ui_tree` // otherwise when creating another partial _h will not call create, and take the cached _ui_tree
   mount() {
     ;(this._owner_inst._partial_insts ?? new Set()).add(this)
@@ -174,8 +180,21 @@ let instantiate_partial = (partial: UITree, current_inst: Inst, sync_refs: boole
   let owner_inst = current_inst
   while (inst_to_comp_class(owner_inst) !== owner_comp) owner_inst = owner_inst._parent_inst as Inst // go up the inst tree to get owner_inst, it should always reach parent where partial was defined
 
-  let partial_inst = h({ _: PartialComp, _partial: partial, _sync_refs: sync_refs }) as PartialComp // by using _h, partial_inst should have _parent_inst == current_inst
-  partial_inst._owner_inst = owner_inst
+  // specific version of h() fn - in case we don't want to rely on h() because _-prefixing changes
+  // let partial_inst = new PartialComp(partial, owner_inst, sync_refs)
+  // let el_or_child_inst = with_current_inst(partial_inst, h, partial) as InstEl | Inst
+  // let el = is_node(el_or_child_inst) ? el_or_child_inst : el_or_child_inst._el
+  // if (el) {
+  //   ;(el as InstEl)[$inst] = partial_inst
+  //   partial_inst._el = el
+  // }
+
+  let partial_inst = h({
+    _: PartialComp,
+    _partial: partial,
+    _sync_refs: sync_refs,
+    _owner_inst: owner_inst,
+  }) as PartialComp
 
   return partial_inst
 }
@@ -197,11 +216,11 @@ let insert_partial_with_current_inst = (
   partial: UITree | undefined,
   current_inst_key = '_partial' /* TODO? '_el' */,
 ) => {
-  assert_exists(_current_inst)
-  let { _anchor, _inspos } = _current_inst
+  assert_exists(curr_inst)
+  let { _anchor, _inspos } = curr_inst
   assert_exists(_anchor) // _anchor set when processing UITree for components that don't create an _el
-  let prev = _current_inst[current_inst_key] as PartialComp | undefined // will be there if mounted first
-  _current_inst[current_inst_key] = insert_partial(partial, prev, _current_inst, _anchor, _inspos)
+  let prev = curr_inst[current_inst_key] as PartialComp | undefined // will be there if mounted first
+  curr_inst[current_inst_key] = insert_partial(partial, prev, curr_inst, _anchor, _inspos)
 }
 
 export let insert_partial = (
@@ -282,13 +301,13 @@ class Slot extends Component {
 }
 
 export function $slot(ref: string): UITree {
-  assert_exists(_current_inst)
+  assert_exists(curr_inst)
   return { _: Slot, ref }
 }
 
 export function slot(ref: string, value: UITree) {
-  assert_exists(_current_inst)
-  let slot_inst = _current_inst[ref] as Inst
+  assert_exists(curr_inst)
+  let slot_inst = curr_inst[ref] as Inst
   if (slot_inst) update<Slot>(slot_inst, { value })
 }
 
@@ -304,7 +323,7 @@ class When extends Component {
   declare else?: UITree
 
   update() {
-    assert_exists(_current_inst)
+    assert_exists(curr_inst)
     if (c('when')) insert_partial_with_current_inst(this.when ? this.then : this.else)
   }
 }
@@ -320,10 +339,10 @@ export function $when(ref: string, then: UITree, _else?: UITree): UITree {
 // TODO right now it returns `changed`, not whether `then` or `else` are active - what should it return?
 let $when_suffix = '__has_changed__'
 export function when(when: boolean, ref: string): boolean {
-  assert_exists(_current_inst)
+  assert_exists(curr_inst)
   let changed = memo(ref + $when_suffix, when)
   if (changed) {
-    let When_inst = _current_inst[ref] as Inst
+    let When_inst = curr_inst[ref] as Inst
     if (__DEV__) {
       // if user comments out $when in template, do not throw
       if (!When_inst) {
@@ -371,8 +390,8 @@ class Each extends Component {
         let cached_inst = this.curr_cache.get(key)
         if (cached_inst) this.curr_cache.delete(key)
         else {
-          assert_exists(_current_inst) // TODO is it `this`?
-          cached_inst = instantiate_partial(this.item_template, _current_inst)
+          assert_exists(curr_inst) // TODO is it `this`?
+          cached_inst = instantiate_partial(this.item_template, curr_inst)
           ;(new_insts ??= new Map()).set(item, cached_inst) // for mount - could just `update(item_inst, item)` here only if update were scheduled (runs in microTask), otherwise must do it after reconcile to ensure it's in the DOM
         }
         this.next_cache.set(key, cached_inst)
@@ -419,10 +438,10 @@ class Each extends Component {
 export let $each = (ref: string, item_template: UITree) => ({ _: Each, ref, item_template })
 
 export let each = (ref: string, array_or_array_key: any[] | string /*, item_update?: any*/) => {
-  assert_exists(_current_inst)
-  let Each_inst = _current_inst[ref] as Inst
+  assert_exists(curr_inst)
+  let Each_inst = curr_inst[ref] as Inst
   // if (c(array_key)) {
-  let array = is_str(array_or_array_key) ? _current_inst[array_or_array_key] : array_or_array_key
+  let array = is_str(array_or_array_key) ? curr_inst[array_or_array_key] : array_or_array_key
   update<Each>(Each_inst, { array })
   // }
 }
@@ -571,7 +590,7 @@ export function listen(el: Element, event_name: string, handler: Handler<any, an
   // @ts-expect-error
   el[event_prefix + event_name] = handler
 
-  if (_current_inst) (el as InstEl)[$inst] = _current_inst
+  if (curr_inst) (el as InstEl)[$inst] = curr_inst
 }
 
 //#endregion
@@ -582,23 +601,23 @@ export function listen(el: Element, event_name: string, handler: Handler<any, an
 
 // stack, update may call a child component's update
 let _insts: Inst[] = [],
-  _current_inst: Inst | undefined
+  curr_inst: Inst | undefined
 
-export let inst = _current_inst as Inst
+export let inst = curr_inst as Inst
 
 let with_current_inst = (new_inst: Inst | undefined, fn: Function, arg1?: any, arg2?: any) => {
-  if (_current_inst) _insts.push(_current_inst)
-  _current_inst = new_inst as Inst
+  if (curr_inst) _insts.push(curr_inst)
+  curr_inst = new_inst as Inst
   let res = fn.call(new_inst, arg1, arg2) // `fn.call` with `new_inst` as `this` needed only for handlers, see global_event_listener
-  _current_inst = _insts.pop() as Inst
+  curr_inst = _insts.pop() as Inst
   return res
 }
 
 let process_tag_prop = (el: Element, prop_key: string, value: any) => {
   switch (prop_key) {
     case 'ref':
-      assert_exists(_current_inst)
-      _current_inst[value as string] = el //refs are strings
+      assert_exists(curr_inst)
+      curr_inst[value as string] = el //refs are strings
       break
     case 'class':
       if (is_str(value)) {
@@ -629,13 +648,13 @@ let process_tag_prop = (el: Element, prop_key: string, value: any) => {
           el.appendChild(node) // PERF .append() faster? but only el has it, not node
           if (pending_slot) {
             // resolve pending slot from last iteration: this iteration has node, so can anchor to it
-            assert_exists(_current_inst)
+            assert_exists(curr_inst)
             pending_slot._inspos = 'beforebegin'
             pending_slot._anchor = node
             pending_slot = undefined
           }
         } else {
-          assert_exists(_current_inst)
+          assert_exists(curr_inst)
           let inst = child_node_or_inst as Inst
           // resolve pending slot from last iteration: this iteration is a "hole" (an inst without ._el), so must create comment node
           if (pending_slot) {
@@ -676,15 +695,15 @@ let process_tag_prop = (el: Element, prop_key: string, value: any) => {
   }
 }
 
-let process_hole = (inst_or_node: Inst | Node, prop: string, static_hole: HoleProto) => {
-  assert_exists(_current_inst)
-  ;(_current_inst._holes ??= []).push({
-    fn: static_hole.fn,
-    deps: static_hole.deps,
+let process_hole_proto = (inst_or_node: Inst | Node, prop: string, hole_proto: HoleProto) => {
+  assert_exists(curr_inst)
+  ;(curr_inst._holes ??= []).push({
+    fn: hole_proto.fn,
+    deps: hole_proto.deps,
     current_value: undefined,
     inst_or_node,
     prop,
-    owner_inst: _current_inst,
+    owner_inst: owner_inst_or_curr_inst(),
   })
 }
 
@@ -811,7 +830,7 @@ export let h: (ui_tree: UITree) => El | Inst
       for (let prop_key in ui_tree)
         if (!prop_key.startsWith('_')) {
           let prop_value = ui_tree[prop_key]
-          if (prop_value instanceof HoleProto) process_hole(el, prop_key, prop_value)
+          if (prop_value instanceof HoleProto) process_hole_proto(el, prop_key, prop_value)
           else process_tag_prop(el, prop_key, prop_value)
         }
       return el as El
@@ -831,21 +850,21 @@ export let h: (ui_tree: UITree) => El | Inst
         let prop_value = props[prop_key]
 
         // we are processing a template
-        if (_current_inst) {
+        if (curr_inst) {
           if (prop_value instanceof HoleProto) {
             is_static_inst = false
-            process_hole(tag_inst, prop_key, prop_value)
+            process_hole_proto(tag_inst, prop_key, prop_value)
             continue
           } else if (is_fn(prop_value) || is_ui_tree(prop_value)) {
             // associate handler or partial to the component they were defined in
             // when processing a partial inst that itself has a partial/handler, associate it with its owner_inst's component
-            let owner_comp = inst_to_comp_class(_current_inst instanceof PartialComp ? _current_inst._owner_inst : _current_inst) // prettier-ignore
+            let owner_comp = inst_to_comp_class(owner_inst_or_curr_inst()) // prettier-ignore
             handler_or_partial__owner_comp_class.set(prop_value as any, owner_comp)
           } else if (prop_key == 'ref') {
             is_static_inst = false // ref means it will be further updated in update
-            assert_exists(_current_inst)
+            assert_exists(curr_inst)
             assert(is_str(prop_value)) // refs are strings
-            _current_inst[prop_value] = tag_inst
+            curr_inst[prop_value] = tag_inst
             continue
           }
         }
@@ -860,13 +879,12 @@ export let h: (ui_tree: UITree) => El | Inst
     //#region finish inst creation
     if (did_not_have_tag_inst) {
       let ui_tree = comp._ui_tree
+      let el
       if (!ui_tree) {
         let el_or_ui_tree = tag_inst.create?.()
-        if (is_node(el_or_ui_tree)) {
-          // if create returns DOM
-          ;(el_or_ui_tree as InstEl)[$inst] = tag_inst
-          tag_inst._el = el_or_ui_tree
-        } else if (exists(el_or_ui_tree)) {
+        // if create returns DOM
+        if (is_node(el_or_ui_tree)) el = el_or_ui_tree
+        else if (exists(el_or_ui_tree)) {
           // if create returns UITree
           ui_tree = el_or_ui_tree
           if (comp.cache_ui_tree) comp._ui_tree = ui_tree // otherwise can be gc'ed
@@ -875,22 +893,18 @@ export let h: (ui_tree: UITree) => El | Inst
       // no `else`, this is intentional - will have ui_tree only if create does not return DOM node
       if (ui_tree) {
         let el_or_child_inst = with_current_inst(tag_inst, h, ui_tree) as InstEl | Inst
-
-        if (is_node(el_or_child_inst)) {
-          let child_inst = el_to_inst_el_is_part_of(el_or_child_inst)
-          if (child_inst)
-            tag_inst._el_inst = child_inst // if el already has an inst (eg because inside component the first child was <Container>), save it in _el_inst
-            // rewrite that element's inst to this one
-          ;(el_or_child_inst as InstEl)[$inst] = tag_inst
-          tag_inst._el = el_or_child_inst
-        } else {
-          // el_or_child_inst is inst, and has no ._el - TODO change this to check ._el if we always return inst
-        }
+        el = is_node(el_or_child_inst) ? el_or_child_inst : el_or_child_inst._el
       }
 
-      if (_current_inst) {
-        tag_inst._parent_inst = _current_inst
-        ;(_current_inst._child_insts ??= new Set()).add(tag_inst)
+      // will possibly rewrite el_or_child_inst's _el's $inst to tag_inst - can still be found by checking which child inst has the same ._el
+      if (el) {
+        ;(el as InstEl)[$inst] = tag_inst
+        tag_inst._el = el
+      }
+
+      if (curr_inst) {
+        tag_inst._parent_inst = curr_inst
+        ;(curr_inst._child_insts ??= new Set()).add(tag_inst)
       }
     }
     //#endregion
@@ -913,8 +927,8 @@ export let h: (ui_tree: UITree) => El | Inst
 /** allows setting a default value for a prop in `update` - TODO not needed since we have _first_update */
 export let default_value = (key: string, val: any) => {
   // _memo(_current_inst!, key, val, _current_inst![key] === undefined)
-  assert_exists(_current_inst)
-  let inst = _current_inst
+  assert_exists(curr_inst)
+  let inst = curr_inst
   if (inst[key] === undefined) {
     inst._changed.set(key, undefined)
     inst[key] = val
@@ -930,7 +944,7 @@ let _memo = (inst: Inst, key: string, val: any, has_changed?: boolean): boolean 
   if (has_changed) inst[key] = val
   return has_changed
 }
-export let memo = (key: string, val: any, has_changed?: any) => _memo(_current_inst!, key, val, has_changed)
+export let memo = (key: string, val: any, has_changed?: any) => _memo(curr_inst!, key, val, has_changed)
 
 export let c = (
   p0: string,
@@ -944,8 +958,8 @@ export let c = (
   p8?: string,
   p9?: string,
 ): boolean => {
-  assert_exists(_current_inst)
-  return changed(_current_inst, p0, p1, p2, p3, p4, p5, p6, p7, p8, p9)
+  assert_exists(curr_inst)
+  return changed(curr_inst, p0, p1, p2, p3, p4, p5, p6, p7, p8, p9)
 }
 
 ////
@@ -955,9 +969,9 @@ let update_holes = (inst: Inst) => {
     let inst__hole_values: Map<Inst, AnyObject> | undefined
     for (let hole of inst._holes) {
       // TODO invoke with the right owner `inst` and `each_inst`
-      assert_exists(_current_inst)
+      assert_exists(curr_inst)
       // TODO for partials: If/Slot want current_inst here, but Each wants each_inst - must distinguish, or just know $('prop') means `inst.prop` not `each_inst.prop`
-      let v = is_str(hole.fn) ? _current_inst[hole.fn] : hole.fn()
+      let v = is_str(hole.fn) ? curr_inst[hole.fn] : hole.fn()
       // TODO custom equals
       if (v != hole.current_value) {
         let { inst_or_node, prop } = hole
@@ -996,8 +1010,7 @@ let _update_inst = (inst: Inst) => {
 
   inst._changed.clear()
 }
-export let trigger_update = (inst: Inst) =>
-  with_current_inst(inst instanceof PartialComp ? inst._owner_inst : inst, _update_inst, inst)
+export let trigger_update = (inst: Inst) => with_current_inst(owner_inst_or_curr_inst(), _update_inst, inst)
 
 export let update = <Props extends Component>(
   el_or_inst: InstEl | Inst,
@@ -1041,7 +1054,7 @@ export let unmount = (inst: Inst) => {
 
 type Effect = Inst | { cleanup?(): void; update(): void | (() => void) /* can return cleanup fn */ }
 let _current_effect: Effect | undefined
-let get_current_effect = (): Effect => _current_effect ?? _current_inst!
+let get_current_effect = (): Effect => _current_effect ?? curr_inst!
 
 // TODO iterable weakset for effects? otherwise must manually remove
 let prev_effects = new Set<Effect>()
