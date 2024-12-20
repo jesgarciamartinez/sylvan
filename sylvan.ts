@@ -162,6 +162,7 @@ class PartialComp extends Component {
   declare _partial: UITree
   declare _owner_inst: Inst
   declare _sync_refs: boolean
+  declare _index?: number // for Each
 
   create() { return this._partial } // prettier-ignore
   static cache_ui_tree = false // avoids having to do this right after instantiating: `delete PartialComp._ui_tree` // otherwise when creating another partial _h will not call create, and take the cached _ui_tree
@@ -361,7 +362,7 @@ export function when(when: boolean, ref: string): boolean {
 /*--------------------------------------------------------------------------------------------------------------------------------------------*/
 //#region Each
 
-export let each_inst: Inst
+export let each_inst: Inst | undefined
 class Each extends Component {
   // props
   declare item_template: UITree
@@ -395,7 +396,8 @@ class Each extends Component {
           ;(new_insts ??= new Map()).set(item, cached_inst) // for mount - could just `update(item_inst, item)` here only if update were scheduled (runs in microTask), otherwise must do it after reconcile to ensure it's in the DOM
         }
         this.next_cache.set(key, cached_inst)
-        next_dom_array.push(cached_inst._el!) // for now, should have ._el - TODO nested When, etc
+        let index = next_dom_array.push(cached_inst._el!) // for now, should have ._el - TODO nested When, etc
+        cached_inst._index = index
       }
 
       reconcile(this._el, this.curr_dom_array, next_dom_array)
@@ -403,7 +405,7 @@ class Each extends Component {
       // item can be an object or a primitive
       if (new_insts!) for (let [item, inst] of new_insts) update(inst, this.items_are_objs ? item : { item }) // mount
       for (let [_, inst] of this.curr_cache) unmount(inst) // unmount
-      // TODO: when unmount -  prev_inst._owner_inst!._partial_insts!.delete(prev_inst)
+      // TODO: when unmount - prev_inst._owner_inst!._partial_insts!.delete(prev_inst)
 
       let { next_cache } = this
       this.curr_cache.clear()
@@ -414,7 +416,7 @@ class Each extends Component {
 
     /* update insts when their obj changes
       we can't access item_instances from outside, so have to rely on global reactivity `set` to update them
-      to do so we add the Each inst to effects, its `update` will execute any time anything changes, and inside it will check if it's one of its objs */
+      to do so we add the Each inst to effects, Each's `update()` will execute any time anything changes, and inside it will check if it's one of its objs */
 
     if (this.items_are_objs) {
       effects.add(this)
@@ -424,11 +426,12 @@ class Each extends Component {
           let props = obj
           // if it has the changed keys - not "whole obj changed" - only pass changed props - TODO could avoid having a for-loop here and inside update, using trigger_update
           if (keys) { props = {}; for (let [key, _] of keys) props[key] = obj[key] } // prettier-ignore
-          // TODO BUG: should not set current_inst to item_inst here: use another global ('each_inst') instead of inst
-          // so within an Each with holes (or item update fn), can use both `each_inst` for the item_inst and `inst` for the parent
-          // if there are nested lists: could have yet another, but better to force to put nested list in different component
+
+          // within an Each with holes (or item update fn), can use both `each_inst` for the item_inst and `inst` for the owner_inst
+          // if there are nested lists: could have yet another variable, but better to force to put nested list in different component
           each_inst = item_inst
-          update(item_inst, props)
+          update(item_inst, props) // curr_inst will be the partial'sowner_inst
+          each_inst = undefined
         }
       }
     }
