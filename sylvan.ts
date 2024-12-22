@@ -810,26 +810,24 @@ export let h: (ui_tree: UITree) => El | Inst
       'vkern',
     ]),
     is_svg = (s: string) => svg_tags.has(s)
-  let process_tag = (tag: string): El => {
-    let el
-    let starts_with_dot = tag.startsWith('.')
-    if (starts_with_dot || tag.startsWith('#')) {
-      el = document.createElement('div')
-      el[starts_with_dot ? 'className' : 'id'] = tag.slice(1)
-    } else
-      el = is_svg(tag)
-        ? document.createElementNS('http://www.w3.org/2000/svg', tag)
-        : document.createElement(tag)
-
-    return el
-  }
 
   let insts_pool = new Map<CompClass, Array<Inst>>() // TODO - or delete this and have do it in userland by having the component constructor return an inst from the pool
 
   h = (ui_tree) => {
     let { _: tag } = ui_tree
     if (is_str(tag)) {
-      let el = process_tag(tag)
+      // process tag
+      let el,
+        starts_with_dot = tag.startsWith('.')
+      if (starts_with_dot || tag.startsWith('#')) {
+        el = document.createElement('div')
+        el[starts_with_dot ? 'className' : 'id'] = tag.slice(1)
+      } else
+        el = is_svg(tag)
+          ? document.createElementNS('http://www.w3.org/2000/svg', tag)
+          : document.createElement(tag)
+
+      // process props
       for (let prop_key in ui_tree)
         if (!prop_key.startsWith('_')) {
           let prop_value = ui_tree[prop_key]
