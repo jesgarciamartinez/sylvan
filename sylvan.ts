@@ -90,16 +90,17 @@ class HoleProto<T = any> {
 }
 
 export let $ = (fn: Hole<any>['fn'], deps?: Hole<any>['deps']) => new HoleProto(fn, deps)
-export let $dyn = (fn: Hole<any>['fn']) => new HoleProto(fn, undefined)
 
 export class Component {
   [key: string]: any
 
   create?(): El | UITree
+
   mount?(): void
   update?(): void
   cleanup?(): void
   unmount?(): void
+
   static _ui_tree?: UITree
   static cache_ui_tree = true
   static equals?: { [key: string]: (val: any, prev: any) => boolean }
@@ -113,7 +114,7 @@ export class Component {
   _child_insts?: Set<Inst> // with only refs, since non-static will have a ref for sure, could just add _static_child_insts instead of all _child_insts - NO, must be able to call unmount on all child insts - either child_insts with is_static flag or iterate through all props to see if there is an inst -> unreliable
 
   _holes?: Hole<any>[] // when iterating, will need Map<Inst, props> - can update then, or just set values and update after running `update()` - probably not
-  _partial_insts?: Set<Inst>
+  _partial_insts?: Set<Inst> // array
 
   _mounted: boolean = false
   _is_static?: boolean
@@ -692,8 +693,11 @@ let process_tag_prop = (el: Element, prop_key: string, value: any) => {
       }
       break
     default:
-      if (is_fn(value)) listen(el, prop_key, value as Handler) // fn must be a Handler
-      else if (value == null) el.removeAttribute(prop_key)
+      if (is_fn(value)) {
+        listen(el, prop_key, value as Handler) // fn is a handler
+        // if (prop_key.startsWith('on')) listen(el, prop_key.slice(2).toLowerCase(), value as Handler) // fn is a handler
+        // else
+      } else if (value == null) el.removeAttribute(prop_key)
       else el.setAttribute(prop_key, value)
   }
 }
@@ -703,10 +707,10 @@ let process_hole_proto = (inst_or_node: Inst | Node, prop: string, hole_proto: H
   ;(curr_inst._holes ??= []).push({
     fn: hole_proto.fn,
     deps: hole_proto.deps,
-    current_value: undefined,
-    inst_or_node,
     prop,
     owner_inst: owner_inst_or_curr_inst(),
+    current_value: undefined,
+    inst_or_node,
   })
 }
 
